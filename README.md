@@ -53,12 +53,23 @@ open("draft.edited.md", "w", encoding="utf-8").write(result.edited)
 This is a single-user tool. It is meant to run on your own machine or home server, not to be exposed to the internet, and there is no hosted instance.
 
 - [x] M1: core library (masking, chunking, safety checks, diffs, tests)
-- [ ] M2: container image, Kustomize manifests, Argo CD application
+- [x] M2: web UI and API for the draft queue, container image, Kustomize manifests, Argo CD application, CI that builds and publishes the image
 - [ ] M3: nightly CronJob running local models on CPU, with resource limits
 - [ ] M4: CI/CD loop (GitHub Actions, GHCR, Argo CD)
 - [ ] M5: model comparison and documentation
 
+The web service checks the `Content-Length` header to refuse oversized uploads and relies on its ingress for authentication; put a body-size limit in front of it if you expose it beyond a trusted network.
+
 Known limits of the Markdown handling: indented (4-space) code blocks are not detected, tables are never edited, and text must be NFC-normalised Unicode for the word diff to be accurate.
+
+## Deploy on Kubernetes with Argo CD
+
+1. Push to `main`. The `ci` workflow tests the code, builds `ghcr.io/<owner>/nightshift:sha-<commit>` and commits the new tag to `k8s/overlays/homelab/kustomization.yaml`.
+2. Make the GHCR package public once (Packages, nightshift, Package settings, Change visibility) so the cluster can pull it without credentials.
+3. Set your own host in `k8s/overlays/homelab/kustomization.yaml`, then create the login with `./scripts/set-basic-auth.sh <user>`. The Secret is created in the cluster and is never stored in Git.
+4. `kubectl apply -f argocd/application.yaml`. Argo CD keeps the cluster in sync with `main` from then on.
+
+The manifests run as a non-root user on a read-only filesystem, drop every capability, deny all network traffic except the ingress controller, and keep drafts on a volume that Argo CD never prunes.
 
 ## Development
 

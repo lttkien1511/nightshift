@@ -1,0 +1,48 @@
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: selfsigned
+  namespace: nightshift
+spec:
+  selfSigned: {}
+---
+# Credentials come from Secret "nightshift-auth" (key "users", htpasswd format).
+# It is created by scripts/set-basic-auth.sh and is never stored in Git.
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: nightshift-auth
+  namespace: nightshift
+spec:
+  basicAuth:
+    secret: nightshift-auth
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: nightshift
+  namespace: nightshift
+  labels:
+    app.kubernetes.io/name: nightshift
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+    cert-manager.io/issuer: selfsigned
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    traefik.ingress.kubernetes.io/router.middlewares: nightshift-nightshift-auth@kubernetescrd
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: nightshift.example.lab
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: nightshift-web
+                port:
+                  name: http
+  tls:
+    - hosts:
+        - nightshift.example.lab
+      secretName: nightshift-tls

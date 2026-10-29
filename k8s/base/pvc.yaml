@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: nightshift-data
+  namespace: nightshift
+  labels:
+    app.kubernetes.io/name: nightshift
+  annotations:
+    # Drafts live here: never let Argo CD delete the volume on prune or app deletion.
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 2Gi
