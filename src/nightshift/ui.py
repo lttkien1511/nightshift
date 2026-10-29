@@ -9,6 +9,7 @@ from typing import Any
 from urllib.parse import quote, urlparse
 
 from .diffing import word_diff
+from .runner import RunState
 from .storage import Draft, digest, model_file
 
 SHOW_MODES = ("changed", "rejected", "all")
@@ -52,13 +53,15 @@ def _chip(text: str, kind: str = "") -> str:
     return f'<span class="chip {kind}">{text}</span>'
 
 
-def strip_html(snap: dict[str, Any], monitor_url: str = "") -> str:
+def strip_html(snap: dict[str, Any], monitor_url: str = "", run: RunState | None = None) -> str:
     queue = snap.get("queue") or {}
     worker = snap.get("worker") or {}
     chips = [
         _chip(f"{_count(queue.get('waiting'))} waiting"),
         _chip(f"{_count(queue.get('ready'))} with results"),
     ]
+    if run is not None and run.running:
+        chips.append(_chip(f"editing {esc(run.slug)} {run.done}/{run.total}", "run"))
     finished = worker.get("finished") or worker.get("started")
     if worker.get("state") == "running":
         chips.append(_chip("worker running", "run"))
@@ -76,10 +79,10 @@ def strip_html(snap: dict[str, Any], monitor_url: str = "") -> str:
     return "".join(chips)
 
 
-def _sidebar(drafts: Sequence[Draft], active: str, full: bool) -> str:
+def _sidebar(drafts: Sequence[Draft], active: str, full: bool, running: str = "") -> str:
     items = []
     for d in drafts:
-        state = "ready" if d.has_results else "waiting"
+        state = "editing" if d.slug == running else ("ready" if d.has_results else "waiting")
         current = ' aria-current="page"' if d.slug == active else ""
         items.append(
             f'<li><a href="/drafts/{esc(d.slug)}"{current}><span class="t">{esc(d.slug)}</span>'
@@ -98,7 +101,10 @@ def page(
     strip: str,
     active: str = "",
     queue_full: bool = False,
+    running: str = "",
 ) -> str:
+    # While the page you are looking at is being edited, reload it every few seconds.
+    refresh = '<meta http-equiv="refresh" content="3">' if running and running == active else ""
     theme = (
         '<div class="theme" role="group" aria-label="Colour theme">'
         '<button type="button" data-mode="auto">Auto</button>'
@@ -109,19 +115,25 @@ def page(
         '<!doctype html><html lang="en"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width,initial-scale=1">'
         '<meta name="color-scheme" content="light dark">'
-        f"<title>{esc(title)}</title>"
+        f"{refresh}<title>{esc(title)}</title>"
         '<link rel="stylesheet" href="/static/ui.css">'
         '<script src="/static/ui.js"></script></head><body>'
         '<header class="top"><a class="brand" href="/">nightshift</a>'
         f'<div class="strip">{strip}</div>'
         f'<div class="tools"><span id="phase" class="phase"></span>{theme}</div></header>'
         '<div class="sky" aria-hidden="true"></div>'
-        f'<div class="layout"><aside class="side">{_sidebar(drafts, active, queue_full)}</aside>'
+        '<div class="layout"><aside class="side">'
+        f"{_sidebar(drafts, active, queue_full, running)}</aside>"
         f"<main>{main}</main></div></body></html>"
     )
 
 
-def new_draft_main(max_bytes: int) -> str:
+def new_draft_main(max_bytes: int, can_run: bool = False) -> str:
+    now_button = (
+        '<button class="secondary" name="run" value="1">Queue and run now</button>'
+        if can_run
+        else ""
+    )
     return (
         "<h1>New draft</h1>"
         '<p class="lead">Paste Markdown or choose a file. The nightly worker edits the prose and '
@@ -135,7 +147,56 @@ def new_draft_main(max_bytes: int) -> str:
         '<label>Markdown<textarea name="text" id="text" rows="18" required></textarea></label>'
         f'<p class="counter" data-max="{_count(max_bytes)}"><span id="count">0</span> of '
         f"{_count(max_bytes):,} bytes</p>"
-        '<button class="primary">Queue draft</button></form>'
+        '<div class="buttons"><button class="primary">Queue draft</button>'
+        f"{now_button}</div></form>"
+    )
+
+
+def _elapsed(seconds: float) -> str:
+    minutes, rest = divmod(max(int(seconds), 0), 60)
+    return f"{minutes}:{rest:02d}"
+
+
+def run_panel(slug: str, models: Sequence[str], state: RunState | None, now: float) -> str:
+    """The Run now card: a button, or the progress of the run that is going on."""
+    if not models:
+        return ""
+    base = f"/drafts/{esc(slug)}"
+    mine = state is not None and state.slug == slug
+    if state is not None and state.running:
+        if not mine:
+            return (
+                '<section class="card runcard"><b>Another draft is being edited.</b> '
+                f'<span class="hint"><a href="/drafts/{esc(state.slug)}">{esc(state.slug)}</a> '
+                "has to finish first, because the model handles one draft at a time."
+                "</span></section>"
+            )
+        total = max(state.total, 1)
+        return (
+            '<section class="card runcard" aria-live="polite"><div class="runhead">'
+            f"<b>Editing with {esc(state.model)}</b>"
+            f'<span class="hint">block {state.done} of {state.total} '
+            f"&middot; {_elapsed(now - state.started)} elapsed</span></div>"
+            f'<progress max="{total}" value="{min(state.done, total)}"></progress>'
+            f'<form method="post" action="{base}/cancel"><button>Cancel</button></form>'
+            '<p class="hint">This page reloads by itself and shows the result when it is done.</p>'
+            "</section>"
+        )
+    notice = ""
+    if mine and state is not None and state.state == "failed":
+        notice = f'<p class="banner">The last run failed: {esc(state.error)}</p>'
+    elif mine and state is not None and state.state == "cancelled":
+        notice = '<p class="hint">The last run was cancelled.</p>'
+    select = ""
+    if len(models) > 1:
+        options = "".join(f'<option value="{esc(m)}">{esc(m)}</option>' for m in models)
+        select = f'<label class="inline">Model<select name="model">{options}</select></label>'
+    return (
+        f'<section class="card runcard">{notice}'
+        f'<form class="runform" method="post" action="{base}/run">'
+        f'{select}<button class="primary">Run now</button>'
+        '<span class="hint">Edit this draft right away instead of waiting for tonight. '
+        "A short draft takes a few minutes.</span></form></section>"
     )
 
 
@@ -200,6 +261,7 @@ def draft_main(
     results: Sequence[dict[str, Any]],
     model: str = "",
     show: str = "changed",
+    run_html: str = "",
 ) -> str:
     show = show if show in SHOW_MODES else "changed"
     base = f"/drafts/{esc(slug)}"
@@ -215,8 +277,8 @@ def draft_main(
     )
     if not results:
         return (
-            f'{title}<div class="card empty">No results yet. The worker runs every night; '
-            f"this page updates once it has been through the draft.</div>{original}"
+            f'{title}{run_html}<div class="card empty">No results yet. The worker runs every '
+            f"night; this page updates once it has been through the draft.</div>{original}"
         )
 
     by_file = {model_file(str(r.get("model", ""))): r for r in results}
@@ -278,4 +340,4 @@ def draft_main(
         f'<form method="get" action="{base}/merged" id="merge">'
         f'<input type="hidden" name="model" value="{esc(chosen_key)}">{actions}{blocks_html}</form>'
     )
-    return f"{title}{tabs}{summary_html}{stale_html}{filters}{form}{original}"
+    return f"{title}{run_html}{tabs}{summary_html}{stale_html}{filters}{form}{original}"

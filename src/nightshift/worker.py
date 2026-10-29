@@ -10,7 +10,8 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
 from .ollama import OllamaConfig, OllamaEditor, unload
-from .pipeline import DocumentResult, Editor, process_document
+from .pipeline import Editor, process_document
+from .results import never_answered, result_payload
 from .storage import Store, digest
 from .web import store_from_env
 
@@ -29,29 +30,6 @@ class Summary:
 
 def now_iso() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds")
-
-
-def result_payload(model: str, text: str, result: DocumentResult) -> dict[str, object]:
-    return {
-        "model": model,
-        "draft_sha256": digest(text),
-        "created": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
-        "stats": result.stats,
-        "warnings": list(result.warnings),
-        "edited": result.edited,
-        "blocks": [
-            {
-                "index": b.index,
-                "kind": b.kind,
-                "status": b.status,
-                "original": b.original,
-                "result": b.result,
-                "proposal": b.proposal,
-                "reasons": list(b.reasons),
-            }
-            for b in result.blocks
-        ],
-    }
 
 
 def run(
@@ -82,9 +60,7 @@ def run(
                     continue
                 result = process_document(text, editor)
                 outcomes = result.stats
-                if outcomes.get("error") and not (
-                    outcomes.get("edited") or outcomes.get("unchanged") or outcomes.get("rejected")
-                ):
+                if never_answered(result):
                     # The model never answered: leave no result so tomorrow's run retries.
                     log.error("%s / %s: every block failed", draft.slug, model)
                     summary.failed.append(key)

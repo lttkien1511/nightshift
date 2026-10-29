@@ -46,6 +46,11 @@ spec:
               value: "1000000"
             - name: NIGHTSHIFT_MAX_QUEUE
               value: "20"
+            - name: NIGHTSHIFT_OLLAMA_URL
+              value: http://ollama.nightshift.svc.cluster.local:11434
+            # Models offered by the Run now button (the nightly CronJob has its own list).
+            - name: NIGHTSHIFT_RUN_MODELS
+              value: qwen2.5:7b
           readinessProbe:
             httpGet:
               path: /healthz
