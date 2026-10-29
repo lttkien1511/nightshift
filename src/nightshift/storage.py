@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 import shutil
 import unicodedata
@@ -42,6 +43,22 @@ def is_slug(value: str) -> bool:
     return len(value) <= MAX_SLUG and _SLUG.fullmatch(value) is not None
 
 
+def model_file(model: str) -> str:
+    """A model tag such as ``qwen2.5:7b`` as a safe file stem such as ``qwen2.5_7b``."""
+    stem = re.sub(r"[^a-z0-9.-]+", "_", model.lower()).strip("._-")
+    if not stem:
+        raise StorageError("the model name has no usable characters")
+    return stem[:80]
+
+
+def _load_json(path: Path) -> dict[str, object] | None:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
 @dataclass(frozen=True)
 class Draft:
     slug: str
@@ -62,6 +79,32 @@ class Store:
     @property
     def outbox(self) -> Path:
         return self.root / "outbox"
+
+    @property
+    def voice_path(self) -> Path:
+        return self.root / "voice.md"
+
+    def _result_path(self, slug: str, model: str) -> Path:
+        return self.outbox / slug / f"{model_file(model)}.json"
+
+    def write_result(self, slug: str, model: str, payload: dict[str, object]) -> None:
+        path = self._result_path(slug, model)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(f".{path.name}.tmp")
+        tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=1), encoding="utf-8")
+        tmp.replace(path)
+
+    def result(self, slug: str, model: str) -> dict[str, object] | None:
+        if not is_slug(slug):
+            return None
+        return _load_json(self._result_path(slug, model))
+
+    def results(self, slug: str) -> list[dict[str, object]]:
+        """Every model's result for a draft, ordered by model name."""
+        if not is_slug(slug):
+            return []
+        found = (_load_json(p) for p in sorted((self.outbox / slug).glob("*.json")))
+        return [r for r in found if r is not None]
 
     def ensure(self) -> None:
         self.inbox.mkdir(parents=True, exist_ok=True)

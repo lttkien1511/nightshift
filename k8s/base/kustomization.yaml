@@ -7,3 +7,6 @@ resources:
   - service.yaml
   - networkpolicy.yaml
   - ingress.yaml
+  - ollama.yaml
+  - cronjob.yaml
+  - networkpolicy-ollama.yaml

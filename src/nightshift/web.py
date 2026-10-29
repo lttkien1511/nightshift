@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import html
 import os
 from collections.abc import Awaitable, Callable
@@ -13,6 +14,7 @@ from fastapi import FastAPI, Form, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from . import __version__
+from .diffing import word_diff
 from .storage import DraftTooLarge, QueueFull, StorageError, Store
 
 _SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
@@ -30,6 +32,7 @@ _STYLE = (
     "table{width:100%;border-collapse:collapse}td,th{text-align:left;padding:.3rem .2rem}"
     "pre{white-space:pre-wrap;word-break:break-word;padding:.8rem;border:1px solid #8884}"
     "form.inline{display:inline}.muted{opacity:.65}"
+    "ins{background:#2a92;text-decoration:none}del{background:#d334}"
 )
 
 
@@ -89,12 +92,66 @@ def _index_page(store: Store) -> str:
     )
 
 
-def _draft_page(slug: str, text: str, has_results: bool) -> str:
-    status = "Results are ready." if has_results else "No results yet."
+def _diff_html(original: str, edited: str) -> str:
+    parts = []
+    for op, chunk in word_diff(original, edited):
+        escaped = html.escape(chunk)
+        if op == "delete":
+            parts.append(f"<del>{escaped}</del>")
+        elif op == "insert":
+            parts.append(f"<ins>{escaped}</ins>")
+        else:
+            parts.append(escaped)
+    return "".join(parts)
+
+
+def _block_html(block: dict[str, object]) -> str:
+    status = str(block.get("status", ""))
+    if status not in {"edited", "rejected"}:
+        return ""
+    original = str(block.get("original", ""))
+    shown = str(block.get("result" if status == "edited" else "proposal") or original)
+    note = ""
+    if status == "rejected":
+        reasons = block.get("reasons")
+        listed = "; ".join(str(r) for r in reasons) if isinstance(reasons, list) else ""
+        note = f'<p class="muted">Rejected, original kept: {html.escape(listed)}</p>'
+    return f"<pre>{_diff_html(original, shown)}</pre>{note}"
+
+
+def _result_html(result: dict[str, object], current: str) -> str:
+    stale = result.get("draft_sha256") != hashlib.sha256(current.encode("utf-8")).hexdigest()
+    stats = result.get("stats")
+    summary = (
+        ", ".join(f"{count} {status}" for status, count in sorted(stats.items()))
+        if isinstance(stats, dict)
+        else ""
+    )
+    blocks = result.get("blocks")
+    body = "".join(_block_html(b) for b in blocks if isinstance(b, dict)) if blocks else ""
+    model = html.escape(str(result.get("model", "model")))
+    created = html.escape(str(result.get("created", "")))
+    stale_note = (
+        '<p class="muted">The draft changed after this run; wait for the next one.</p>'
+        if stale
+        else ""
+    )
+    body = body or '<p class="muted">No changes proposed.</p>'
+    return (
+        f"<h2>{model}</h2>"
+        f'<p class="muted">{html.escape(summary)} &middot; {created}</p>'
+        f"{stale_note}{body}"
+    )
+
+
+def _draft_page(slug: str, text: str, results: list[dict[str, object]]) -> str:
+    status = f"{len(results)} model run(s) ready." if results else "No results yet."
+    shown = "".join(_result_html(r, text) for r in results)
     return _page(
         slug,
         f"<p><a href='/'>&larr; All drafts</a></p><h1>{html.escape(slug)}</h1>"
-        f'<p class="muted">{status}</p><pre>{html.escape(text)}</pre>{_delete_form(slug)}',
+        f'<p class="muted">{status}</p>{shown}'
+        f"<h2>Original</h2><pre>{html.escape(text)}</pre>{_delete_form(slug)}",
     )
 
 
@@ -153,8 +210,13 @@ def create_app(store: Store | None = None) -> FastAPI:
         text = store.read(slug)
         if text is None:
             raise HTTPException(404, "no such draft")
-        has_results = any(d.slug == slug and d.has_results for d in store.drafts())
-        return HTMLResponse(_draft_page(slug, text, has_results), headers=_PAGE_HEADERS)
+        return HTMLResponse(_draft_page(slug, text, store.results(slug)), headers=_PAGE_HEADERS)
+
+    @app.get("/drafts/{slug}/results")
+    def draft_results(slug: str) -> list[dict[str, object]]:
+        if store.read(slug) is None:
+            raise HTTPException(404, "no such draft")
+        return store.results(slug)
 
     @app.post("/drafts/{slug}/delete")
     def delete_draft(slug: str) -> RedirectResponse:

@@ -1,0 +1,24 @@
+# NOT part of the Kustomize base on purpose: Ollama has no internet access day to day.
+# Apply this by hand only while pulling a model, then delete it again:
+#   kubectl apply -f k8s/optional/ollama-pull-egress.yaml
+#   kubectl -n nightshift exec deploy/ollama -- ollama pull qwen2.5:7b
+#   kubectl delete -f k8s/optional/ollama-pull-egress.yaml
+# DNS is already allowed namespace-wide by allow-dns-egress.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ollama-pull-egress
+  namespace: nightshift
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: nightshift
+      app.kubernetes.io/component: ollama
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10]
+      ports:
+        - port: 443

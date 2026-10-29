@@ -1,0 +1,73 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: nightshift-worker
+  namespace: nightshift
+  labels:
+    app.kubernetes.io/name: nightshift
+    app.kubernetes.io/component: worker
+spec:
+  schedule: "0 1 * * *"
+  timeZone: Asia/Ho_Chi_Minh
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 3600
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 21600 # 6 h hard stop; the worker itself stops at 5.5 h
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: nightshift
+            app.kubernetes.io/component: worker
+        spec:
+          restartPolicy: Never
+          automountServiceAccountToken: false
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 10001
+            runAsGroup: 10001
+            fsGroup: 10001
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: worker
+              image: ghcr.io/lttkien1511/nightshift
+              command: ["python", "-m", "nightshift.worker"]
+              env:
+                - name: NIGHTSHIFT_DATA_DIR
+                  value: /data
+                - name: NIGHTSHIFT_OLLAMA_URL
+                  value: http://ollama.nightshift.svc.cluster.local:11434
+                - name: NIGHTSHIFT_MODELS
+                  value: qwen2.5:7b
+                - name: NIGHTSHIFT_OLLAMA_TIMEOUT
+                  value: "900"
+                - name: NIGHTSHIFT_BUDGET_SECONDS
+                  value: "19800"
+              resources:
+                requests:
+                  cpu: 25m
+                  memory: 64Mi
+                limits:
+                  cpu: 250m
+                  memory: 192Mi
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: [ALL]
+              volumeMounts:
+                - name: data
+                  mountPath: /data
+                - name: tmp
+                  mountPath: /tmp
+          volumes:
+            - name: data
+              persistentVolumeClaim:
+                claimName: nightshift-data
+            - name: tmp
+              emptyDir:
+                sizeLimit: 64Mi
