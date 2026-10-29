@@ -43,7 +43,7 @@ spec:
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: allow-ollama-from-worker
+  name: allow-ollama-from-worker-and-web
   namespace: nightshift
 spec:
   podSelector:
@@ -57,5 +57,29 @@ spec:
             matchLabels:
               app.kubernetes.io/name: nightshift
               app.kubernetes.io/component: worker
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: nightshift
+              app.kubernetes.io/component: web
+      ports:
+        - port: 11434
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-web-to-ollama
+  namespace: nightshift
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: nightshift
+      app.kubernetes.io/component: web
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: nightshift
+              app.kubernetes.io/component: ollama
       ports:
         - port: 11434

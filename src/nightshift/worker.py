@@ -2,16 +2,16 @@
 
 from __future__ import annotations
 
-import hashlib
 import logging
 import os
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 
 from .ollama import OllamaConfig, OllamaEditor, unload
 from .pipeline import DocumentResult, Editor, process_document
-from .storage import Store
+from .storage import Store, digest
 from .web import store_from_env
 
 log = logging.getLogger("nightshift.worker")
@@ -27,8 +27,8 @@ class Summary:
     timed_out: bool = False
 
 
-def digest(text: str) -> str:
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+def now_iso() -> str:
+    return datetime.now(UTC).isoformat(timespec="seconds")
 
 
 def result_payload(model: str, text: str, result: DocumentResult) -> dict[str, object]:
@@ -117,12 +117,27 @@ def main() -> int:
         return OllamaConfig(url=base.url, model=model, timeout=base.timeout, num_ctx=base.num_ctx)
 
     budget = float(os.environ.get("NIGHTSHIFT_BUDGET_SECONDS", "19800"))
+    models = _models_from_env()
+    started = now_iso()
+    store.write_worker_status({"state": "running", "started": started, "models": models})
     summary = run(
         store,
-        _models_from_env(),
+        models,
         lambda model: OllamaEditor(cfg_for(model), voice),
         release=lambda model: unload(cfg_for(model)),
         deadline=time.monotonic() + budget,
+    )
+    store.write_worker_status(
+        {
+            "state": "finished",
+            "started": started,
+            "finished": now_iso(),
+            "models": models,
+            "done": len(summary.done),
+            "skipped": len(summary.skipped),
+            "failed": len(summary.failed),
+            "timed_out": summary.timed_out,
+        }
     )
     log.info(
         "done=%d skipped=%d failed=%d timed_out=%s",

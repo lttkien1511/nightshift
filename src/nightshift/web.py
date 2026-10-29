@@ -15,6 +15,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 
 from . import __version__
 from .diffing import word_diff
+from .status import collect, render
 from .storage import DraftTooLarge, QueueFull, StorageError, Store
 
 _SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
@@ -33,6 +34,16 @@ _STYLE = (
     "pre{white-space:pre-wrap;word-break:break-word;padding:.8rem;border:1px solid #8884}"
     "form.inline{display:inline}.muted{opacity:.65}"
     "ins{background:#2a92;text-decoration:none}del{background:#d334}"
+    "ol.flow{list-style:none;padding:0;display:grid;gap:.6rem;"
+    "grid-template-columns:repeat(auto-fit,minmax(9.5rem,1fr))}"
+    "li.node{border:1px solid #8886;border-left-width:6px;border-radius:6px;padding:.5rem .6rem;"
+    "font-size:.85rem;line-height:1.35}"
+    "li.node b{display:block;font-size:.95rem}"
+    ".tag{display:inline-block;font-size:.72rem;margin:.1rem 0 .2rem;padding:0 .35rem;"
+    "border:1px solid #8886;border-radius:4px}"
+    "li.ok{border-left-color:#2a9d4a}li.warn{border-left-color:#d19a1c}"
+    "li.bad{border-left-color:#d33}li.idle{border-left-color:#8886}"
+    "nav{margin:0 0 1rem}nav a{margin-right:1rem}"
 )
 
 
@@ -51,11 +62,29 @@ def _same_origin(request: Request) -> bool:
     return request.headers.get("sec-fetch-site", "same-origin") in {"same-origin", "none"}
 
 
-def _page(title: str, body: str) -> str:
+def _page(title: str, body: str, head: str = "") -> str:
     return (
         '<!doctype html><html lang="en"><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width,initial-scale=1">'
-        f"<title>{html.escape(title)}</title><style>{_STYLE}</style>{body}</html>"
+        f"{head}<title>{html.escape(title)}</title><style>{_STYLE}</style>{body}</html>"
+    )
+
+
+def _status_page(store: Store) -> str:
+    deploy, nightly = collect(
+        store,
+        os.environ.get("NIGHTSHIFT_OLLAMA_URL", "http://ollama.nightshift.svc.cluster.local:11434"),
+        actions_url=os.environ.get(
+            "NIGHTSHIFT_ACTIONS_URL", "https://github.com/lttkien1511/nightshift/actions"
+        ),
+        argocd_url=os.environ.get("NIGHTSHIFT_ARGOCD_URL", ""),
+        version=__version__,
+    )
+    return _page(
+        "nightshift status",
+        "<nav><a href='/'>&larr; Drafts</a></nav><h1>Pipeline status</h1>"
+        + render(deploy, nightly),
+        head='<meta http-equiv="refresh" content="30">',
     )
 
 
@@ -87,6 +116,7 @@ def _index_page(store: Store) -> str:
     return _page(
         "nightshift",
         "<h1>nightshift</h1>"
+        "<nav><a href='/status'>Pipeline status</a></nav>"
         '<p class="muted">Drafts wait here until the nightly worker has processed them.</p>'
         f"<h2>New draft</h2>{form}<h2>Queue</h2>{table}",
     )
@@ -180,6 +210,10 @@ def create_app(store: Store | None = None) -> FastAPI:
     @app.get("/healthz")
     def healthz() -> dict[str, str]:
         return {"status": "ok"}
+
+    @app.get("/status", response_class=HTMLResponse)
+    def status() -> HTMLResponse:
+        return HTMLResponse(_status_page(store), headers=_PAGE_HEADERS)
 
     @app.get("/", response_class=HTMLResponse)
     def index() -> HTMLResponse:

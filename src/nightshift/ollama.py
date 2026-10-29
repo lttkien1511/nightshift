@@ -91,6 +91,32 @@ def unload(cfg: OllamaConfig) -> None:
         _post(cfg, "/api/generate", {"model": cfg.model, "keep_alive": 0, "stream": False})
 
 
+@dataclass(frozen=True)
+class OllamaInfo:
+    reachable: bool
+    models: tuple[tuple[str, int], ...] = ()
+    error: str = ""
+
+
+def list_models(url: str, timeout: float = 3.0) -> OllamaInfo:
+    """Ask a server which models it has installed. Never raises: the status page uses it."""
+    request = urllib.request.Request(url.rstrip("/") + "/api/tags", method="GET")
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310
+            body = json.load(response)
+    except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
+        return OllamaInfo(False, error=str(exc))
+    items = body.get("models") if isinstance(body, dict) else None
+    if not isinstance(items, list):
+        return OllamaInfo(False, error="unexpected reply")
+    found = [
+        (str(m["name"]), int(m.get("size") or 0))
+        for m in items
+        if isinstance(m, dict) and "name" in m
+    ]
+    return OllamaInfo(True, models=tuple(sorted(found)))
+
+
 class OllamaEditor:
     """An ``Editor`` for ``process_document`` that asks a local Ollama model."""
 

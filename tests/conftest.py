@@ -15,6 +15,7 @@ class FakeOllama:
         self.status = 200
         self.raw: bytes | None = None
         self.delay = 0.0
+        self.installed: list[dict] = []
         outer = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -27,6 +28,13 @@ class FakeOllama:
                     body = outer.raw
                 else:
                     body = json.dumps({"response": outer.reply(payload)}).encode()
+                self.send_response(outer.status)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def do_GET(self):
+                body = json.dumps({"models": outer.installed}).encode()
                 self.send_response(outer.status)
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()

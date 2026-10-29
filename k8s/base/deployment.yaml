@@ -46,6 +46,8 @@ spec:
               value: "1000000"
             - name: NIGHTSHIFT_MAX_QUEUE
               value: "20"
+            - name: NIGHTSHIFT_OLLAMA_URL
+              value: http://ollama.nightshift.svc.cluster.local:11434
           readinessProbe:
             httpGet:
               path: /healthz

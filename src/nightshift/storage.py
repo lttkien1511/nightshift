@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import shutil
@@ -41,6 +42,11 @@ def slugify(name: str) -> str:
 
 def is_slug(value: str) -> bool:
     return len(value) <= MAX_SLUG and _SLUG.fullmatch(value) is not None
+
+
+def digest(text: str) -> str:
+    """Fingerprint of a draft, so a result can tell whether the draft changed since."""
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 def model_file(model: str) -> str:
@@ -83,6 +89,19 @@ class Store:
     @property
     def voice_path(self) -> Path:
         return self.root / "voice.md"
+
+    @property
+    def worker_status_path(self) -> Path:
+        return self.root / "worker-status.json"
+
+    def write_worker_status(self, payload: dict[str, object]) -> None:
+        tmp = self.worker_status_path.with_name(".worker-status.tmp")
+        tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=1), encoding="utf-8")
+        tmp.replace(self.worker_status_path)
+
+    def worker_status(self) -> dict[str, object] | None:
+        """What the last worker run reported, or ``None`` if it has never run."""
+        return _load_json(self.worker_status_path)
 
     def _result_path(self, slug: str, model: str) -> Path:
         return self.outbox / slug / f"{model_file(model)}.json"
