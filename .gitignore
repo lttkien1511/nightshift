@@ -1,0 +1,25 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# secrets and cluster credentials must never be committed
+.env
+.env.*
+*.pem
+*.key
+kubeconfig*
+
+# personal content and model output stay out of the public repo
+drafts/
+inbox/
+outbox/
+data/
+voice.md
