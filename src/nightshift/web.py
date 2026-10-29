@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
-import html
 import os
 from collections.abc import Awaitable, Callable
 from pathlib import Path
@@ -11,30 +9,21 @@ from typing import Annotated
 from urllib.parse import urlparse
 
 from fastapi import FastAPI, Form, HTTPException, Request, Response
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse, RedirectResponse
 
-from . import __version__
-from .diffing import word_diff
+from . import __version__, ui
+from .merge import MergeError, merge
 from .status import snapshot
-from .storage import DraftTooLarge, QueueFull, StorageError, Store
+from .storage import DraftTooLarge, QueueFull, StorageError, Store, digest, model_file
 
 _SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
+_STATIC = Path(__file__).parent / "static"
 _PAGE_HEADERS = {
     "Content-Security-Policy": (
-        "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; "
-        "base-uri 'none'; frame-ancestors 'none'"
+        "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; "
+        "form-action 'self'; base-uri 'none'; frame-ancestors 'none'"
     )
 }
-_STYLE = (
-    ":root{color-scheme:light dark}"
-    "body{font:16px/1.5 system-ui,sans-serif;max-width:46rem;margin:2rem auto;padding:0 1rem}"
-    "input,textarea{width:100%;box-sizing:border-box;font:inherit;padding:.4rem}"
-    "textarea{font-family:ui-monospace,monospace}"
-    "table{width:100%;border-collapse:collapse}td,th{text-align:left;padding:.3rem .2rem}"
-    "pre{white-space:pre-wrap;word-break:break-word;padding:.8rem;border:1px solid #8884}"
-    "form.inline{display:inline}.muted{opacity:.65}"
-    "ins{background:#2a92;text-decoration:none}del{background:#d334}"
-)
 
 
 def store_from_env() -> Store:
@@ -52,115 +41,19 @@ def _same_origin(request: Request) -> bool:
     return request.headers.get("sec-fetch-site", "same-origin") in {"same-origin", "none"}
 
 
-def _page(title: str, body: str) -> str:
-    return (
-        '<!doctype html><html lang="en"><meta charset="utf-8">'
-        '<meta name="viewport" content="width=device-width,initial-scale=1">'
-        f"<title>{html.escape(title)}</title><style>{_STYLE}</style>{body}</html>"
-    )
-
-
-def _delete_form(slug: str) -> str:
-    action = f"/drafts/{html.escape(slug)}/delete"
-    return f'<form class="inline" method="post" action="{action}"><button>Delete</button></form>'
-
-
-def _index_page(store: Store) -> str:
-    rows = "".join(
-        "<tr>"
-        f'<td><a href="/drafts/{html.escape(d.slug)}">{html.escape(d.slug)}</a></td>'
-        f"<td>{d.size} bytes</td>"
-        f"<td>{'results ready' if d.has_results else 'waiting'}</td>"
-        f"<td>{_delete_form(d.slug)}</td></tr>"
-        for d in store.drafts()
-    )
-    table = (
-        f"<table><tr><th>Draft</th><th>Size</th><th>Status</th><th></th></tr>{rows}</table>"
-        if rows
-        else '<p class="muted">No drafts yet.</p>'
-    )
-    form = (
-        '<form method="post" action="/drafts">'
-        '<p><label>Name<input name="name" required maxlength="80"></label></p>'
-        '<p><label>Markdown<textarea name="text" rows="12" required></textarea></label></p>'
-        "<button>Queue draft</button></form>"
-    )
-    return _page(
-        "nightshift",
-        "<h1>nightshift</h1>"
-        '<p class="muted">Drafts wait here until the nightly worker has processed them.</p>'
-        f"<h2>New draft</h2>{form}<h2>Queue</h2>{table}",
-    )
-
-
-def _diff_html(original: str, edited: str) -> str:
-    parts = []
-    for op, chunk in word_diff(original, edited):
-        escaped = html.escape(chunk)
-        if op == "delete":
-            parts.append(f"<del>{escaped}</del>")
-        elif op == "insert":
-            parts.append(f"<ins>{escaped}</ins>")
-        else:
-            parts.append(escaped)
-    return "".join(parts)
-
-
-def _block_html(block: dict[str, object]) -> str:
-    status = str(block.get("status", ""))
-    if status not in {"edited", "rejected"}:
-        return ""
-    original = str(block.get("original", ""))
-    shown = str(block.get("result" if status == "edited" else "proposal") or original)
-    note = ""
-    if status == "rejected":
-        reasons = block.get("reasons")
-        listed = "; ".join(str(r) for r in reasons) if isinstance(reasons, list) else ""
-        note = f'<p class="muted">Rejected, original kept: {html.escape(listed)}</p>'
-    return f"<pre>{_diff_html(original, shown)}</pre>{note}"
-
-
-def _result_html(result: dict[str, object], current: str) -> str:
-    stale = result.get("draft_sha256") != hashlib.sha256(current.encode("utf-8")).hexdigest()
-    stats = result.get("stats")
-    summary = (
-        ", ".join(f"{count} {status}" for status, count in sorted(stats.items()))
-        if isinstance(stats, dict)
-        else ""
-    )
-    blocks = result.get("blocks")
-    body = "".join(_block_html(b) for b in blocks if isinstance(b, dict)) if blocks else ""
-    model = html.escape(str(result.get("model", "model")))
-    created = html.escape(str(result.get("created", "")))
-    stale_note = (
-        '<p class="muted">The draft changed after this run; wait for the next one.</p>'
-        if stale
-        else ""
-    )
-    body = body or '<p class="muted">No changes proposed.</p>'
-    return (
-        f"<h2>{model}</h2>"
-        f'<p class="muted">{html.escape(summary)} &middot; {created}</p>'
-        f"{stale_note}{body}"
-    )
-
-
-def _draft_page(slug: str, text: str, results: list[dict[str, object]]) -> str:
-    status = f"{len(results)} model run(s) ready." if results else "No results yet."
-    shown = "".join(_result_html(r, text) for r in results)
-    return _page(
-        slug,
-        f"<p><a href='/'>&larr; All drafts</a></p><h1>{html.escape(slug)}</h1>"
-        f'<p class="muted">{status}</p>{shown}'
-        f"<h2>Original</h2><pre>{html.escape(text)}</pre>{_delete_form(slug)}",
-    )
-
-
 def create_app(store: Store | None = None) -> FastAPI:
     store = store or store_from_env()
     store.ensure()
     body_limit = store.max_bytes + 16_384
+    monitor_url = os.environ.get("NIGHTSHIFT_MONITOR_URL", "")
     app = FastAPI(title="nightshift", version=__version__)
+
+    def render(title: str, main: str, active: str = "") -> HTMLResponse:
+        drafts = store.drafts()
+        strip = ui.strip_html(snapshot(store, __version__), monitor_url)
+        full = len(drafts) >= store.max_queue
+        html = ui.page(title, main, drafts, strip, active=active, queue_full=full)
+        return HTMLResponse(html, headers=_PAGE_HEADERS)
 
     @app.middleware("http")
     async def guard(
@@ -186,9 +79,17 @@ def create_app(store: Store | None = None) -> FastAPI:
     def status_json() -> dict[str, object]:
         return snapshot(store, __version__)
 
+    @app.get("/static/ui.css")
+    def stylesheet() -> FileResponse:
+        return FileResponse(_STATIC / "ui.css", media_type="text/css")
+
+    @app.get("/static/ui.js")
+    def script() -> FileResponse:
+        return FileResponse(_STATIC / "ui.js", media_type="text/javascript")
+
     @app.get("/", response_class=HTMLResponse)
     def index() -> HTMLResponse:
-        return HTMLResponse(_index_page(store), headers=_PAGE_HEADERS)
+        return render("nightshift", ui.new_draft_main(store.max_bytes))
 
     @app.get("/drafts")
     def list_drafts() -> list[dict[str, object]]:
@@ -201,27 +102,52 @@ def create_app(store: Store | None = None) -> FastAPI:
         name: Annotated[str, Form()], text: Annotated[str, Form()]
     ) -> RedirectResponse:
         try:
-            store.save(name, text)
+            slug = store.save(name, text)
         except DraftTooLarge as exc:
             raise HTTPException(413, str(exc)) from exc
         except QueueFull as exc:
             raise HTTPException(429, str(exc)) from exc
         except StorageError as exc:
             raise HTTPException(400, str(exc)) from exc
-        return RedirectResponse("/", status_code=303)
+        return RedirectResponse(f"/drafts/{slug}", status_code=303)
 
     @app.get("/drafts/{slug}", response_class=HTMLResponse)
-    def show_draft(slug: str) -> HTMLResponse:
+    def show_draft(slug: str, model: str = "", show: str = "changed") -> HTMLResponse:
         text = store.read(slug)
         if text is None:
             raise HTTPException(404, "no such draft")
-        return HTMLResponse(_draft_page(slug, text, store.results(slug)), headers=_PAGE_HEADERS)
+        main = ui.draft_main(slug, text, store.results(slug), model=model, show=show)
+        return render(slug, main, active=slug)
 
     @app.get("/drafts/{slug}/results")
     def draft_results(slug: str) -> list[dict[str, object]]:
         if store.read(slug) is None:
             raise HTTPException(404, "no such draft")
         return store.results(slug)
+
+    @app.get("/drafts/{slug}/merged")
+    def merged(request: Request, slug: str, model: str) -> PlainTextResponse:
+        text = store.read(slug)
+        if text is None:
+            raise HTTPException(404, "no such draft")
+        result = next(
+            (r for r in store.results(slug) if model_file(str(r.get("model"))) == model), None
+        )
+        if result is None:
+            raise HTTPException(404, "no results for that model")
+        if result.get("draft_sha256") != digest(text):
+            raise HTTPException(409, "the draft changed after this run")
+        try:
+            keep = {int(value) for value in request.query_params.getlist("keep")}
+        except ValueError as exc:
+            raise HTTPException(400, "keep must be block numbers") from exc
+        blocks = [b for b in result.get("blocks", []) if isinstance(b, dict)]
+        try:
+            body = merge(text, blocks, keep)
+        except MergeError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        headers = {"Content-Disposition": f'attachment; filename="{slug}-edited.md"'}
+        return PlainTextResponse(body, media_type="text/markdown; charset=utf-8", headers=headers)
 
     @app.post("/drafts/{slug}/delete")
     def delete_draft(slug: str) -> RedirectResponse:

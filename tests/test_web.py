@@ -25,10 +25,10 @@ def test_healthz(client):
     assert client.get("/healthz").json() == {"status": "ok"}
 
 
-def test_upload_queues_the_draft_and_redirects_home(client, store):
+def test_upload_queues_the_draft_and_opens_it(client, store):
     response = upload(client)
     assert response.status_code == 303
-    assert response.headers["location"] == "/"
+    assert response.headers["location"] == "/drafts/go-rancher"
     assert store.read("go-rancher") == "Xin chào"
     assert client.get("/drafts").json() == [
         {"slug": "go-rancher", "size": len("Xin chào".encode()), "has_results": False}

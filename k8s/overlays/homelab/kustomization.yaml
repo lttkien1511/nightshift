@@ -16,3 +16,12 @@ patches:
       - op: replace
         path: /spec/tls/0/hosts/0
         value: nightshift.kienhomeserver.lab
+  - target:
+      kind: Deployment
+      name: nightshift-web
+    patch: |-
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value:
+          name: NIGHTSHIFT_MONITOR_URL
+          value: https://monitor.kienhomeserver.lab

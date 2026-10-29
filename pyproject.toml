@@ -19,6 +19,9 @@ dev = ["nightshift[web]", "pytest>=8", "ruff>=0.17,<0.18", "httpx2>=2.0"]
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+nightshift = ["static/*"]
+
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
