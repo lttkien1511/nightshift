@@ -61,8 +61,36 @@ spec:
             matchLabels:
               app.kubernetes.io/name: nightshift
               app.kubernetes.io/component: web
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitor
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: nightshift-monitor
       ports:
         - port: 11434
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-monitor-to-web
+  namespace: nightshift
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: nightshift
+      app.kubernetes.io/component: web
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitor
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: nightshift-monitor
+      ports:
+        - port: 8080
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy

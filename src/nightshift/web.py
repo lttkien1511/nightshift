@@ -15,7 +15,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 
 from . import __version__
 from .diffing import word_diff
-from .status import collect, render
+from .status import collect, render, snapshot
 from .storage import DraftTooLarge, QueueFull, StorageError, Store
 
 _SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
@@ -210,6 +210,10 @@ def create_app(store: Store | None = None) -> FastAPI:
     @app.get("/healthz")
     def healthz() -> dict[str, str]:
         return {"status": "ok"}
+
+    @app.get("/status.json")
+    def status_json() -> dict[str, object]:
+        return snapshot(store, __version__)
 
     @app.get("/status", response_class=HTMLResponse)
     def status() -> HTMLResponse:

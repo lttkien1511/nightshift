@@ -55,7 +55,8 @@ def _ago(then: datetime, now: datetime) -> str:
     return f"{hours} h ago" if hours < 48 else f"{hours // 24} days ago"
 
 
-def _queue(store: Store) -> tuple[Node, Node]:
+def queue_counts(store: Store) -> tuple[int, int, int]:
+    """How many drafts are waiting, have results, and have results older than the draft."""
     waiting = ready = stale = 0
     for draft in store.drafts():
         text = store.read(draft.slug) or ""
@@ -66,6 +67,21 @@ def _queue(store: Store) -> tuple[Node, Node]:
         ready += 1
         if any(r.get("draft_sha256") != digest(text) for r in results):
             stale += 1
+    return waiting, ready, stale
+
+
+def snapshot(store: Store, version: str) -> dict[str, object]:
+    """Machine-readable state for the separate monitor app. Contains no draft text."""
+    waiting, ready, stale = queue_counts(store)
+    return {
+        "version": version,
+        "queue": {"waiting": waiting, "ready": ready, "stale": stale},
+        "worker": store.worker_status() or {},
+    }
+
+
+def _queue(store: Store) -> tuple[Node, Node]:
+    waiting, ready, stale = queue_counts(store)
     queue = Node(
         "Queue",
         "ok",

@@ -122,3 +122,14 @@ def test_worker_main_style_status_roundtrip(store):
     store.write_worker_status({"state": "finished", "done": 3})
     assert store.worker_status() == {"state": "finished", "done": 3}
     assert Store(store.root / "elsewhere").worker_status() is None
+
+
+def test_status_json_has_counts_and_no_draft_text(tmp_path):
+    store = Store(tmp_path)
+    client = TestClient(create_app(store))
+    store.save("secret-title", "Nội dung riêng tư.\n")
+    body = client.get("/status.json").json()
+    assert body["queue"] == {"waiting": 1, "ready": 0, "stale": 0}
+    assert body["worker"] == {}
+    assert body["version"]
+    assert "riêng tư" not in client.get("/status.json").text
