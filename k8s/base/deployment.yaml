@@ -6,8 +6,8 @@ metadata:
   labels:
     app.kubernetes.io/name: nightshift
     app.kubernetes.io/component: web
-  annotations:
-    argocd.argoproj.io/sync-wave: "1"
+  # No sync-wave on purpose: the local-path volume only binds once a pod uses it,
+  # so the PVC and this Deployment must be applied in the same wave.
 spec:
   replicas: 1
   strategy:
