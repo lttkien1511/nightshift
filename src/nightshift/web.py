@@ -92,7 +92,9 @@ def create_app(store: Store | None = None, runner: Runner | None = None) -> Fast
                 return Response("request body too large", 413, media_type="text/plain")
         response = await call_next(request)
         response.headers["X-Content-Type-Options"] = "nosniff"
-        response.headers["Referrer-Policy"] = "no-referrer"
+        # Not no-referrer: with that policy a browser sends "Origin: null" on every form POST,
+        # and the same-origin check above would refuse the page's own forms.
+        response.headers["Referrer-Policy"] = "same-origin"
         response.headers["X-Frame-Options"] = "DENY"
         return response
 

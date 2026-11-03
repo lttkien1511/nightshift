@@ -92,4 +92,12 @@ def test_security_headers_are_set_everywhere(client):
     headers = client.get("/healthz").headers
     assert headers["x-content-type-options"] == "nosniff"
     assert headers["x-frame-options"] == "DENY"
-    assert headers["referrer-policy"] == "no-referrer"
+    # same-origin, never no-referrer: that would make browsers send "Origin: null" on the
+    # page's own form POSTs, and the cross-site check would refuse every one of them.
+    assert headers["referrer-policy"] == "same-origin"
+
+
+def test_a_form_post_from_the_page_itself_is_accepted_and_null_is_not(client, store):
+    browser = {"origin": "http://testserver", "host": "testserver"}
+    assert upload(client, name="ok", headers=browser).status_code == 303
+    assert upload(client, name="bad", headers={"origin": "null"}).status_code == 403
