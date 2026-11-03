@@ -12,6 +12,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 
 from .chunking import EDITABLE_KINDS, split
+from .gate import Gate
 from .masking import MaskingError, mask
 from .pipeline import Editor, process_document
 from .results import never_answered, result_payload
@@ -53,7 +54,9 @@ class Runner:
         make_editor: Callable[[str], Editor],
         models: Sequence[str],
         clock: Callable[[], float] = time.time,
+        gate: Gate | None = None,
     ) -> None:
+        self.gate = gate or Gate()
         self.store = store
         self.models = list(models)
         self._make_editor = make_editor
@@ -82,6 +85,8 @@ class Runner:
         with self._lock:
             if self._state is not None and self._state.running:
                 raise Busy(f"{self._state.slug} is being edited right now")
+            if not self.gate.acquire(f"editing {slug}"):
+                raise Busy(f"{self.gate.holder} right now")
             self._cancel.clear()
             self._state = RunState(slug, model, total, 0, "running", self._clock())
             started = self._state
@@ -104,6 +109,7 @@ class Runner:
 
     def _finish(self, state: str, error: str = "") -> None:
         self._update(state=state, error=error, finished=self._clock())
+        self.gate.release()
 
     def _work(self, slug: str, model: str, text: str) -> None:
         try:

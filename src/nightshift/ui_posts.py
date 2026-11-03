@@ -1,0 +1,295 @@
+"""HTML for the blog post side of the UI: the brief form, the outline and the finished post."""
+
+from __future__ import annotations
+
+import html
+from collections.abc import Mapping, Sequence
+from typing import Any
+
+from .compose import LENGTHS, LIMITS, TONES
+from .composer import PostRun
+from .storage import PostItem
+
+STAGE_LABEL = {"brief": "brief", "outline": "outline", "done": "written"}
+TONE_LABEL = {
+    "conversational": "Conversational",
+    "professional": "Professional",
+    "technical": "Technical and concise",
+    "reflective": "Reflective",
+}
+LENGTH_LABEL = {"short": "Short, about 300 words", "medium": "Medium, about 600 words"}
+LANGUAGE_LABEL = {"vi": "Vietnamese", "en": "English"}
+
+
+def esc(value: object) -> str:
+    return html.escape(str(value), quote=True)
+
+
+def posts_section(posts: Sequence[PostItem], active: str, running: str) -> str:
+    items = []
+    for item in posts:
+        state = "writing" if item.slug == running else item.stage
+        label = "writing" if state == "writing" else STAGE_LABEL.get(state, state)
+        current = ' aria-current="page"' if item.slug == active else ""
+        items.append(
+            f'<li><a href="/posts/{esc(item.slug)}"{current}>'
+            f'<span class="t">{esc(item.title)}</span>'
+            f'<span class="badge {esc(state)}">{esc(label)}</span></a></li>'
+        )
+    listing = "".join(items) or '<li class="empty">No blog posts yet.</li>'
+    return (
+        '<h2 class="sidehead">Blog posts</h2>'
+        '<a class="new-draft alt" href="/posts/new">New blog post</a>'
+        f'<ul class="queue posts">{listing}</ul>'
+    )
+
+
+def _select(name: str, options: Mapping[str, str], chosen: str) -> str:
+    items = "".join(
+        f'<option value="{esc(key)}"{" selected" if key == chosen else ""}>{esc(label)}</option>'
+        for key, label in options.items()
+    )
+    return f'<select name="{esc(name)}" id="{esc(name)}">{items}</select>'
+
+
+def _model_select(models: Sequence[str]) -> str:
+    if len(models) < 2:
+        return ""
+    options = "".join(f'<option value="{esc(m)}">{esc(m)}</option>' for m in models)
+    return f'<label class="inline">Model<select name="model">{options}</select></label>'
+
+
+def brief_form(
+    values: Mapping[str, str] | None,
+    action: str,
+    can_write: bool,
+    error: str = "",
+    existing: bool = False,
+) -> str:
+    """The brief: what the post is about, for whom, in what voice, and what must stay out."""
+    v = {"tone": "conversational", "length": "short", "language": "vi", **(values or {})}
+    note = f'<p class="banner">{esc(error)}</p>' if error else ""
+    tones = {k: TONE_LABEL[k] for k in TONES}
+    lengths = {k: LENGTH_LABEL[k] for k in LENGTHS}
+
+    def text(name: str, label: str, hint: str = "", required: bool = False) -> str:
+        need = " required" if required else ""
+        return (
+            f'<label>{label} <span class="hint">{hint}</span>'
+            f'<input name="{name}" id="{name}" maxlength="{LIMITS[name]}" autocomplete="off"'
+            f' value="{esc(v.get(name, ""))}"{need}></label>'
+        )
+
+    def area(name: str, label: str, hint: str, rows: int) -> str:
+        return (
+            f'<label>{label} <span class="hint">{hint}</span>'
+            f'<textarea name="{name}" id="{name}" rows="{rows}" maxlength="{LIMITS[name]}">'
+            f"\n{esc(v.get(name, ''))}</textarea></label>"
+        )
+
+    if existing:
+        buttons = '<button class="primary">Save the brief</button>'
+    elif can_write:
+        buttons = (
+            '<button class="primary" name="action" value="outline">Suggest an outline</button>'
+            '<button class="secondary" name="action" value="write">Write the post now</button>'
+            '<button name="action" value="save">Save for later</button>'
+        )
+    else:
+        buttons = '<button class="primary" name="action" value="save">Save the brief</button>'
+    heading = "Edit the brief" if existing else "New blog post"
+    lead = (
+        "Tell the model what to write. The more it is given, the less it has to guess. "
+        "It writes in your name only from the material below and marks what is missing."
+    )
+    return (
+        f"<h1>{heading}</h1>"
+        f'<p class="lead">{lead}</p>{note}'
+        f'<form class="card" method="post" action="{esc(action)}">'
+        + text("topic", "Topic or title", "what the post is about", required=True)
+        + '<div class="grid2">'
+        + text("audience", "Who reads it", "for example a recruiter, or someone new to Kubernetes")
+        + f"<label>Tone {_select('tone', tones, v['tone'])}</label>"
+        + f"<label>Length {_select('length', lengths, v['length'])}</label>"
+        + f"<label>Language {_select('language', LANGUAGE_LABEL, v['language'])}</label>"
+        + "</div>"
+        + text("tone_note", "Anything else about the voice", "optional")
+        + area("points", "Key points", "one per line", 5)
+        + area(
+            "material",
+            "Material",
+            "your notes, commands, links, numbers: the only source of facts "
+            f"(up to {LIMITS['material']:,} characters)",
+            14,
+        )
+        + area(
+            "avoid",
+            "Never mention",
+            "one per line; the model never sees these. Write <code>term =&gt; stand-in</code> "
+            "to choose what replaces it, otherwise it becomes [hidden]",
+            4,
+        )
+        + f'<div class="buttons">{buttons}</div></form>'
+    )
+
+
+def _summary(record: Mapping[str, Any]) -> str:
+    brief: Mapping[str, str] = record["brief"]
+    rows = [
+        ("Topic", brief.get("topic", "")),
+        ("Reader", brief.get("audience", "")),
+        (
+            "Tone",
+            TONE_LABEL.get(brief.get("tone", ""), "")
+            + (f"; {brief['tone_note']}" if brief.get("tone_note") else ""),
+        ),
+        ("Length", LENGTH_LABEL.get(brief.get("length", ""), "")),
+        ("Language", LANGUAGE_LABEL.get(brief.get("language", ""), "")),
+        ("Key points", brief.get("points", "")),
+        (
+            "Never mention",
+            f"{len([t for t in brief.get('avoid', '').splitlines() if t.strip()])} term(s)",
+        ),
+    ]
+    body = "".join(
+        f"<tr><th>{esc(label)}</th><td>{esc(value)}</td></tr>" for label, value in rows if value
+    )
+    material = len(brief.get("material", ""))
+    return (
+        '<details class="card"><summary>The brief</summary>'
+        f'<table class="brief">{body}<tr><th>Material</th><td>{material:,} characters</td></tr>'
+        "</table></details>"
+    )
+
+
+def _elapsed(seconds: float) -> str:
+    minutes, rest = divmod(max(int(seconds), 0), 60)
+    return f"{minutes}:{rest:02d}"
+
+
+def _run_card(slug: str, run: PostRun | None, now: float) -> str:
+    base = f"/posts/{esc(slug)}"
+    if run is None:
+        return ""
+    if run.running and run.slug != slug:
+        return (
+            '<section class="card runcard"><b>Another blog post is being written.</b> '
+            f'<span class="hint"><a href="/posts/{esc(run.slug)}">{esc(run.slug)}</a> has to '
+            "finish first, because the model does one job at a time.</span></section>"
+        )
+    if run.slug != slug:
+        return ""
+    if run.running:
+        what = "outline" if run.kind == "outline" else "post"
+        shown = esc(run.partial) if run.partial else "Waiting for the first words..."
+        return (
+            '<section class="card runcard" aria-live="polite"><div class="runhead">'
+            f"<b>Writing the {what} with {esc(run.model)}</b>"
+            f'<span class="hint">{run.chars:,} characters &middot; '
+            f"{_elapsed(now - run.started)} elapsed</span></div>"
+            f'<pre class="pstream">{shown}</pre>'
+            f'<form method="post" action="{base}/cancel"><button>Cancel</button></form>'
+            '<p class="hint">This page reloads by itself. The first words can take up to a '
+            "minute while the model loads.</p></section>"
+        )
+    if run.state == "failed":
+        return f'<p class="banner">The last attempt failed: {esc(run.error)}</p>'
+    if run.state == "cancelled":
+        return '<p class="hint">The last attempt was cancelled.</p>'
+    return ""
+
+
+def _outline_card(slug: str, record: Mapping[str, Any], models: Sequence[str], busy: bool) -> str:
+    base = f"/posts/{esc(slug)}"
+    outline = str(record.get("outline", ""))
+    picker = _model_select(models)
+    if not models or busy:
+        return ""
+    if not outline:
+        return (
+            '<section class="card"><h2>Outline</h2>'
+            '<p class="hint">Let the model propose 4 to 6 points first, so you can steer the '
+            "post before it is written. This takes about a minute.</p>"
+            f'<form class="runform" method="post" action="{base}/outline">{picker}'
+            '<button class="primary">Suggest an outline</button></form>'
+            f'<form class="runform" method="post" action="{base}/write">{picker}'
+            '<button class="secondary">Skip it and write the post now</button></form></section>'
+        )
+    return (
+        '<section class="card"><h2>Outline</h2>'
+        '<p class="hint">Edit it freely. The post follows this outline.</p>'
+        f'<form method="post" action="{base}/write">'
+        f'<textarea name="outline" class="outline" rows="8" maxlength="{LIMITS["outline"]}">'
+        f"\n{esc(outline)}</textarea>"
+        f'<div class="runform">{picker}'
+        '<button class="primary">Write the post from this outline</button>'
+        "</div></form>"
+        f'<form class="runform" method="post" action="{base}/outline">{picker}'
+        "<button>Suggest a new outline</button></form></section>"
+    )
+
+
+def _post_card(slug: str, record: Mapping[str, Any], models: Sequence[str], busy: bool) -> str:
+    post = str(record.get("post", ""))
+    if not post:
+        return ""
+    base = f"/posts/{esc(slug)}"
+    checks = record.get("checks") or []
+    items = "".join(
+        f'<li class="{esc(c.get("level", "info"))}">{esc(c.get("text", ""))}</li>'
+        for c in checks
+        if isinstance(c, dict)
+    )
+    verdict = (
+        f'<ul class="pcheck">{items}</ul>'
+        if items
+        else '<p class="hint">Nothing suspicious found. Read it anyway before you publish.</p>'
+    )
+    again = (
+        f'<form class="inline" method="post" action="{base}/write">'
+        f'<input type="hidden" name="outline" value="{esc(record.get("outline", ""))}">'
+        f"{_model_select(models)}<button>Write it again</button></form>"
+        if models and not busy
+        else ""
+    )
+    return (
+        '<section class="card"><h2>The post</h2>'
+        f'<p class="hint">Written by {esc(record.get("model", "the model"))}. '
+        "These checks look for numbers and names the material does not contain, and for "
+        "anything that looks private. They are not a substitute for reading it.</p>"
+        f"{verdict}"
+        f'<div class="ppost">{esc(post)}</div>'
+        '<div class="buttons">'
+        f'<a class="btn" href="{base}/post.md">Download .md</a>'
+        f'<form class="inline" method="post" action="{base}/to-draft">'
+        '<button class="secondary">Save as a draft to polish</button></form>'
+        f"{again}</div></section>"
+    )
+
+
+def post_main(
+    record: Mapping[str, Any],
+    run: PostRun | None,
+    models: Sequence[str],
+    now: float,
+) -> str:
+    slug = str(record["slug"])
+    base = f"/posts/{esc(slug)}"
+    busy = run is not None and run.running
+    delete = (
+        f'<form class="inline" method="post" action="{base}/delete" '
+        'data-confirm="Delete this blog post, its outline and the written text?">'
+        '<button class="danger">Delete</button></form>'
+    )
+    title = (
+        f'<div class="titlebar"><h1>{esc(record.get("title", slug))}</h1>'
+        f'<div class="titlebtns"><a class="btn" href="{base}/edit">Edit the brief</a>'
+        f"{delete}</div></div>"
+    )
+    return (
+        title
+        + _run_card(slug, run, now)
+        + _post_card(slug, record, models, busy)
+        + _outline_card(slug, record, models, busy)
+        + _summary(record)
+    )

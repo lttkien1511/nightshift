@@ -6,6 +6,7 @@ import contextlib
 import json
 import urllib.error
 import urllib.request
+from collections.abc import Callable
 from dataclasses import dataclass
 
 
@@ -100,3 +101,64 @@ class OllamaEditor:
 
     def __call__(self, block: str) -> str:
         return generate(self.cfg, self._system, block)
+
+
+def generate_stream(
+    cfg: OllamaConfig,
+    system: str,
+    prompt: str,
+    on_text: Callable[[str], object],
+    num_predict: int = 1200,
+    num_ctx: int | None = None,
+) -> str:
+    """Like ``generate`` but the text arrives piece by piece.
+
+    ``cfg.timeout`` is how long the server may stay silent, not the length of the whole
+    answer. ``on_text`` returns False to stop early; closing the connection makes Ollama
+    stop generating.
+    """
+    payload = {
+        "model": cfg.model,
+        "system": system,
+        "prompt": prompt,
+        "stream": True,
+        "keep_alive": cfg.keep_alive,
+        "options": {
+            "temperature": cfg.temperature,
+            "num_ctx": num_ctx or cfg.num_ctx,
+            "num_predict": num_predict,
+        },
+    }
+    request = urllib.request.Request(
+        cfg.url.rstrip("/") + "/api/generate",
+        data=json.dumps(payload).encode(),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    parts: list[str] = []
+    try:
+        with urllib.request.urlopen(request, timeout=cfg.timeout) as response:  # noqa: S310
+            for raw in response:
+                line = raw.strip()
+                if not line:
+                    continue
+                chunk = json.loads(line)
+                if "error" in chunk:
+                    raise OllamaError(str(chunk["error"])[:160])
+                piece = chunk.get("response", "")
+                if piece:
+                    parts.append(piece)
+                    if on_text(piece) is False:
+                        break
+                if chunk.get("done"):
+                    break
+    except urllib.error.HTTPError as exc:
+        raise OllamaError(f"ollama answered HTTP {exc.code}") from exc
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        raise OllamaError(f"ollama is unreachable or too slow: {exc}") from exc
+    except ValueError as exc:
+        raise OllamaError("ollama sent a reply that is not JSON") from exc
+    text = "".join(parts)
+    if not text.strip():
+        raise OllamaError("ollama returned an empty answer")
+    return text

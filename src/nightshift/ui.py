@@ -8,9 +8,11 @@ from collections.abc import Sequence
 from typing import Any
 from urllib.parse import quote, urlparse
 
+from .composer import PostRun
 from .diffing import word_diff
 from .runner import RunState
-from .storage import Draft, digest, model_file
+from .storage import Draft, PostItem, digest, model_file
+from .ui_posts import posts_section
 
 SHOW_MODES = ("changed", "rejected", "all")
 LABELS = {
@@ -53,7 +55,12 @@ def _chip(text: str, kind: str = "") -> str:
     return f'<span class="chip {kind}">{text}</span>'
 
 
-def strip_html(snap: dict[str, Any], monitor_url: str = "", run: RunState | None = None) -> str:
+def strip_html(
+    snap: dict[str, Any],
+    monitor_url: str = "",
+    run: RunState | None = None,
+    compose: PostRun | None = None,
+) -> str:
     queue = snap.get("queue") or {}
     worker = snap.get("worker") or {}
     chips = [
@@ -62,6 +69,8 @@ def strip_html(snap: dict[str, Any], monitor_url: str = "", run: RunState | None
     ]
     if run is not None and run.running:
         chips.append(_chip(f"editing {esc(run.slug)} {run.done}/{run.total}", "run"))
+    if compose is not None and compose.running:
+        chips.append(_chip(f"writing {esc(compose.slug)} &middot; {compose.chars:,} chars", "run"))
     finished = worker.get("finished") or worker.get("started")
     if worker.get("state") == "running":
         chips.append(_chip("worker running", "run"))
@@ -79,7 +88,15 @@ def strip_html(snap: dict[str, Any], monitor_url: str = "", run: RunState | None
     return "".join(chips)
 
 
-def _sidebar(drafts: Sequence[Draft], active: str, full: bool, running: str = "") -> str:
+def _sidebar(
+    drafts: Sequence[Draft],
+    active: str,
+    full: bool,
+    running: str = "",
+    posts: Sequence[PostItem] = (),
+    post_active: str = "",
+    post_running: str = "",
+) -> str:
     items = []
     for d in drafts:
         state = "editing" if d.slug == running else ("ready" if d.has_results else "waiting")
@@ -91,7 +108,8 @@ def _sidebar(drafts: Sequence[Draft], active: str, full: bool, running: str = ""
         )
     listing = "".join(items) or '<li class="empty">No drafts yet.</li>'
     note = '<p class="note">The queue is full. Delete a draft to add another.</p>' if full else ""
-    return f'<a class="new-draft" href="/">New draft</a>{note}<ul class="queue">{listing}</ul>'
+    first = f'<a class="new-draft" href="/">New draft</a>{note}<ul class="queue">{listing}</ul>'
+    return first + posts_section(posts, post_active, post_running)
 
 
 def page(
@@ -102,9 +120,14 @@ def page(
     active: str = "",
     queue_full: bool = False,
     running: str = "",
+    posts: Sequence[PostItem] = (),
+    post_active: str = "",
+    post_running: str = "",
 ) -> str:
-    # While the page you are looking at is being edited, reload it every few seconds.
-    refresh = '<meta http-equiv="refresh" content="3">' if running and running == active else ""
+    # While the page you are looking at is being worked on, reload it every few seconds.
+    busy = (running and running == active) or (post_running and post_running == post_active)
+    refresh = '<meta http-equiv="refresh" content="3">' if busy else ""
+    side = _sidebar(drafts, active, queue_full, running, posts, post_active, post_running)
     theme = (
         '<div class="theme" role="group" aria-label="Colour theme">'
         '<button type="button" data-mode="auto">Auto</button>'
@@ -123,7 +146,7 @@ def page(
         f'<div class="tools"><span id="phase" class="phase"></span>{theme}</div></header>'
         '<div class="sky" aria-hidden="true"></div>'
         '<div class="layout"><aside class="side">'
-        f"{_sidebar(drafts, active, queue_full, running)}</aside>"
+        f"{side}</aside>"
         f"<main>{main}</main></div></body></html>"
     )
 
@@ -139,6 +162,8 @@ def new_draft_main(max_bytes: int, can_run: bool = False) -> str:
         '<p class="lead">Paste Markdown or choose a file. The nightly worker edits the prose and '
         "leaves code, links and front matter alone. Tomorrow you read the diff and keep what "
         "you like.</p>"
+        '<p class="hint">Nothing written yet? <a href="/posts/new">Let the model write a post '
+        "from a brief</a>.</p>"
         '<form class="card" method="post" action="/drafts">'
         '<label>Name<input name="name" id="name" required maxlength="80" '
         'autocomplete="off"></label>'

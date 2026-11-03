@@ -83,7 +83,8 @@ h1{font-size:1.5rem;margin:0 0 .6rem;line-height:1.25}
 input,textarea,button,select{font:inherit;color:inherit}
 input[type=text],input:not([type]),textarea{width:100%;margin-top:.3rem;padding:.55rem .7rem;border:1px solid var(--line);border-radius:8px;background:var(--bg)}
 input[type=file]{display:block;margin-top:.3rem;font-size:.9rem}
-textarea{font-family:var(--mono);font-size:.92rem;line-height:1.55;min-height:20rem;resize:vertical}
+textarea{font-family:var(--mono);font-size:.92rem;line-height:1.55;min-height:6rem;resize:vertical}
+#text,#material{min-height:20rem}
 select{background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:.4rem .6rem}
 button{padding:.45rem .9rem;border:1px solid var(--line);border-radius:8px;background:var(--panel);cursor:pointer}
 button:hover{border-color:var(--accent-ink)}
@@ -149,3 +150,23 @@ main,.side{min-width:0}
 .btn{display:inline-block;padding:.45rem .9rem;border:1px solid var(--line);border-radius:8px;background:var(--panel);color:var(--text);text-decoration:none;font:inherit;cursor:pointer}
 .btn:hover{border-color:var(--accent-ink)}
 .titlebtns{display:flex;gap:.5rem;flex:none}
+.sidehead{font-size:.8rem;letter-spacing:.05em;text-transform:uppercase;color:var(--muted);margin:1.4rem 0 .5rem}
+.new-draft.alt{background:var(--soft);color:var(--text)}
+.queue.posts .t{grid-column:1}
+.grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(14rem,1fr));gap:0 1rem}
+.card label select{display:block;width:100%;margin-top:.3rem}
+label.inline select{width:auto;margin:0}
+.pstream{max-height:18rem;overflow:auto;border:1px solid var(--line);border-radius:8px;background:var(--bg);margin:.6rem 0}
+.ppost{border:1px solid var(--line);border-radius:8px;padding:.9rem 1.1rem;background:var(--bg);font:1.05rem/1.75 var(--prose);white-space:pre-wrap;overflow-wrap:anywhere;margin:.6rem 0 .9rem}
+.pcheck{list-style:none;margin:.4rem 0 .6rem;padding:0}
+.pcheck li{padding:.35rem .7rem;border-left:4px solid var(--line);margin:.3rem 0;background:var(--soft);border-radius:4px;font-size:.9rem}
+.pcheck li.warn{border-left-color:var(--warn)}
+textarea.outline{min-height:9rem;font-family:var(--prose);font-size:1rem;margin:.3rem 0 .7rem}
+.card h2{font-size:1.05rem;margin:0 0 .3rem}
+table.brief{border-collapse:collapse;margin-top:.6rem;font-size:.9rem}
+table.brief th{text-align:left;padding:.2rem 1rem .2rem 0;color:var(--muted);font-weight:600;vertical-align:top;white-space:nowrap}
+table.brief td{padding:.2rem 0;white-space:pre-wrap;overflow-wrap:anywhere}
+.badge.brief,.badge.outline{color:var(--muted)}
+.badge.done{color:var(--ok)}
+.badge.writing{color:var(--run)}
+.grid2{align-items:end}
