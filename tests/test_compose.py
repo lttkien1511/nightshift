@@ -2,6 +2,7 @@ import pytest
 
 from nightshift.compose import (
     LIMITS,
+    OUTLINE_TOKENS,
     BriefError,
     build_inputs,
     check_post,
@@ -89,8 +90,15 @@ def test_prompts_follow_the_brief():
     assert "[TODO: ...]" in write.system and "'# ' title" in write.system
     assert write.num_predict == 1800 and write.target_words == 600
     outline = build_inputs(record(), "outline")
-    assert "4 to 6 bullet points" in outline.system and "Vietnamese" in outline.system
-    assert outline.num_predict == 400
+    assert "Mở bài" in outline.system and "Kết bài" in outline.system
+    assert "Vietnamese" in outline.system and "Choose the sections yourself" in outline.system
+    assert outline.num_predict == OUTLINE_TOKENS
+    with_points = build_inputs(record(points="ý một\ný hai"), "outline")
+    assert "Build the structure from the key points" in with_points.system
+    assert "Choose the sections yourself" not in with_points.system
+    english = build_inputs(record(language="en"), "outline")
+    assert "Opening" in english.system and "Closing" in english.system
+    assert "follow its order" in write.system
     assert "Length:" not in outline.prompt
 
 

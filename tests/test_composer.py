@@ -4,7 +4,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
-from nightshift.compose import normalize_brief
+from nightshift.compose import OUTLINE_TOKENS, normalize_brief
 from nightshift.composer import Composer
 from nightshift.gate import Gate
 from nightshift.ollama import OllamaConfig, OllamaError, generate_stream
@@ -88,7 +88,7 @@ def test_an_outline_run_saves_the_outline_and_moves_the_post_on(store, slug):
     assert composer.state.state == "done" and composer.state.kind == "outline"
     record = store.post(slug)
     assert record["stage"] == "outline" and record["outline"] == "- ý một\n- ý hai"
-    assert seen[0]["num_predict"] == 400
+    assert seen[0]["num_predict"] == OUTLINE_TOKENS
 
 
 def test_a_write_run_saves_the_post_with_checks_and_restores_what_was_protected(store, slug):

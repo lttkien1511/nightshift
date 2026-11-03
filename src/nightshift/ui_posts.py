@@ -208,8 +208,8 @@ def _outline_card(slug: str, record: Mapping[str, Any], models: Sequence[str], b
     if not outline:
         return (
             '<section class="card"><h2>Outline</h2>'
-            '<p class="hint">Let the model propose 4 to 6 points first, so you can steer the '
-            "post before it is written. This takes about a minute.</p>"
+            '<p class="hint">Let the model draft the structure first (opening, sections, '
+            "closing), so you can steer the post before it is written. About a minute.</p>"
             f'<form class="runform" method="post" action="{base}/outline">{picker}'
             '<button class="primary">Suggest an outline</button></form>'
             f'<form class="runform" method="post" action="{base}/write">{picker}'
@@ -223,9 +223,12 @@ def _outline_card(slug: str, record: Mapping[str, Any], models: Sequence[str], b
         f"\n{esc(outline)}</textarea>"
         f'<div class="runform">{picker}'
         '<button class="primary">Write the post from this outline</button>'
+        f'<button formaction="{base}/outline/save">Save outline</button>'
         "</div></form>"
-        f'<form class="runform" method="post" action="{base}/outline">{picker}'
-        "<button>Suggest a new outline</button></form></section>"
+        f'<form class="runform" method="post" action="{base}/outline" '
+        'data-confirm="Replace this outline with a new one from the model? '
+        'Changes you have not saved are lost.">'
+        f"{picker}<button>Suggest a new outline</button></form></section>"
     )
 
 

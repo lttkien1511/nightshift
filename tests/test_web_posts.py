@@ -3,6 +3,7 @@ import threading
 import pytest
 from fastapi.testclient import TestClient
 
+from nightshift.compose import OUTLINE_TOKENS
 from nightshift.composer import Composer
 from nightshift.gate import Gate
 from nightshift.runner import Runner
@@ -33,7 +34,7 @@ class Script:
 
     def __call__(self, system, prompt, num_predict, on_text):
         self.prompts.append(prompt)
-        text = OUTLINE if num_predict == 400 else POST
+        text = OUTLINE if num_predict == OUTLINE_TOKENS else POST
         out = []
         for index, piece in enumerate([text[: len(text) // 2], text[len(text) // 2 :]]):
             if index == 1:
@@ -305,3 +306,40 @@ def test_cross_site_posts_are_refused(client):
     evil = {"origin": "https://evil.example"}
     assert client.post(f"/posts/{slug}/write", headers=evil).status_code == 403
     assert client.post(f"/posts/{slug}/delete", headers=evil).status_code == 403
+
+
+def test_the_outline_can_be_saved_without_writing(client, store, composer):
+    slug = slug_of(create(client))
+    page = client.get(f"/posts/{slug}").text
+    assert store.post(slug)["stage"] == "brief" and "Save outline" not in page
+    saved = client.post(
+        f"/posts/{slug}/outline/save",
+        data={"outline": "- Mở bài: một\r\n- Kết bài: hai "},
+        follow_redirects=False,
+    )
+    assert saved.status_code == 303 and saved.headers["location"] == f"/posts/{slug}"
+    record = store.post(slug)
+    assert record["outline"] == "- Mở bài: một\n- Kết bài: hai" and record["stage"] == "outline"
+    assert composer.state is None
+    page = client.get(f"/posts/{slug}").text
+    assert 'formaction="/posts/' in page and "Save outline" in page
+    assert "- Mở bài: một" in page and "Changes you have not saved are lost" in page
+
+
+def test_saving_an_empty_outline_clears_it_and_bad_saves_are_refused(
+    client, store, script, composer
+):
+    slug = slug_of(create(client, action="outline"))
+    composer.wait()
+    client.post(f"/posts/{slug}/outline/save", data={"outline": ""})
+    assert store.post(slug)["outline"] == "" and store.post(slug)["stage"] == "outline"
+    assert (
+        client.post(f"/posts/{slug}/outline/save", data={"outline": "x" * 3001}).status_code == 400
+    )
+    assert client.post("/posts/nope/outline/save", data={"outline": "a"}).status_code == 404
+    script.hold.clear()
+    client.post(f"/posts/{slug}/write")
+    assert client.post(f"/posts/{slug}/outline/save", data={"outline": "a"}).status_code == 409
+    client.post(f"/posts/{slug}/cancel")
+    script.hold.set()
+    composer.wait()

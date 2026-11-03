@@ -350,6 +350,20 @@ def create_app(
         start_job(slug, "outline", model)
         return RedirectResponse(f"/posts/{slug}", status_code=303)
 
+    @app.post("/posts/{slug}/outline/save")
+    def save_outline(slug: str, outline: Annotated[str, Form()] = "") -> RedirectResponse:
+        record = post_or_404(slug)
+        if writing_now(slug):
+            raise HTTPException(409, "the model is writing this post right now; cancel that first")
+        text = _lf(outline).strip()
+        if len(text) > LIMITS["outline"]:
+            raise HTTPException(400, f"the outline is longer than {LIMITS['outline']:,} characters")
+        fields: dict[str, object] = {"outline": text}
+        if text and record.get("stage") == "brief":
+            fields["stage"] = "outline"
+        store.update_post(slug, **fields)
+        return RedirectResponse(f"/posts/{slug}", status_code=303)
+
     @app.post("/posts/{slug}/write")
     def write_post(
         slug: str,

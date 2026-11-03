@@ -20,7 +20,8 @@ TODO_MARKER = {"vi": "[cần bổ sung: ...]", "en": "[TODO: ...]"}
 HIDDEN_LABEL = {"vi": "[đã ẩn]", "en": "[hidden]"}
 # length -> (target words, token cap for the answer)
 LENGTHS = {"short": (300, 900), "medium": (600, 1800)}
-OUTLINE_TOKENS = 400
+OUTLINE_TOKENS = 600
+OUTLINE_PARTS = {"vi": ("Mở bài", "Kết bài"), "en": ("Opening", "Closing")}
 
 LIMITS = {
     "topic": 200,
@@ -131,16 +132,29 @@ def _system(kind: str, brief: Mapping[str, str]) -> str:
         "guess what is behind it, and never invent new ones. "
     )
     if kind == "outline":
+        opening, closing = OUTLINE_PARTS[brief["language"]]
+        if brief.get("points", "").strip():
+            source = (
+                "Build the structure from the key points: turn each one into a section, and you "
+                "may merge, split or reorder them so the story flows naturally. "
+            )
+        else:
+            source = "Choose the sections yourself from the material. "
         return (
             "You help plan a short blog post for a personal portfolio blog. "
-            "Reply with an outline only: 4 to 6 bullet points, one line each, starting with '- '. "
+            "Reply with the structure of the post as a list, one item per line, each starting "
+            "with '- ' and written as 'Heading: one line on what this part says'. "
+            f"The first item is '{opening}' (how the post begins) and the last is '{closing}' "
+            f"(how it ends); between them come 3 to 6 sections. {source}"
             "Use only what the brief and the material say; do not add facts. "
-            f"{protected}Write the bullets in {language}. No title, no introduction, no commentary."
+            f"{protected}Write in {language}. No title, no introduction, no commentary."
         )
     marker = TODO_MARKER[brief["language"]]
     return (
         "You are a careful ghostwriter for a personal technical blog on a portfolio website. "
         "Write one blog post from the brief and the material. "
+        "If an outline is given, follow its order and cover every part; its first and last "
+        "items say how to open and how to close. "
         "Use ONLY facts, names, numbers, places, dates and commands that appear in the material. "
         "Never invent them and never write quotations. "
         f"When the post needs something the material does not give, write {marker} instead of "
