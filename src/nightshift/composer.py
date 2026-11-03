@@ -17,6 +17,8 @@ from .compose import (
     build_inputs,
     check_post,
     clean_output,
+    ensure_frame,
+    flag_pairs,
     preview,
     restore,
 )
@@ -137,10 +139,13 @@ class Composer:
                 raise RunnerError("the model wrote nothing")
             fields: dict[str, object] = {"model": model, "error": ""}
             if kind == "outline":
-                fields.update(outline=text, stage="outline")
+                fields.update(outline=ensure_frame(text, inputs.language), stage="outline")
             else:
                 fields.update(
-                    post=text, stage="done", checks=check_post(text, inputs, redacted, invented)
+                    post=text,
+                    stage="done",
+                    checks=check_post(text, inputs, redacted, invented),
+                    flags=flag_pairs(text, inputs.source),
                 )
             self.store.update_post(slug, **fields)
         except Exception as exc:

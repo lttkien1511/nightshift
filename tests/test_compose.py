@@ -7,10 +7,15 @@ from nightshift.compose import (
     build_inputs,
     check_post,
     clean_output,
+    ensure_frame,
+    flag_pairs,
     hide_terms,
     normalize_brief,
     parse_terms,
     restore,
+    uncovered_points,
+    unsupported_clauses,
+    unsupported_spans,
 )
 
 
@@ -194,3 +199,207 @@ def test_a_clean_post_has_no_warnings():
     inputs = build_inputs(record(material=material), "write")
     post = "# Gỡ Rancher\n\n" + " ".join(["Tôi gỡ Rancher khỏi cụm k3s."] * 55)
     assert "warn" not in levels(check_post(post, inputs, 0, 0))
+
+
+# --- the outline frame --------------------------------------------------------------------
+
+
+def test_a_missing_opening_and_closing_are_added_neutrally():
+    framed = ensure_frame("- Một: ý\n- Hai: ý", "vi")
+    lines = framed.splitlines()
+    assert lines[0].startswith("- Mở bài:") and lines[-1].startswith("- Kết bài:")
+    assert lines[1:3] == ["- Một: ý", "- Hai: ý"]
+    english = ensure_frame("- One: idea", "en").splitlines()
+    assert english[0].startswith("- Opening:") and english[-1].startswith("- Closing:")
+
+
+def test_an_outline_that_already_has_them_is_left_alone():
+    outline = "- Mở bài: a\n- Giữa: b\n- Kết bài: c"
+    assert ensure_frame(outline, "vi") == outline
+    assert (
+        ensure_frame("- **Mở bài**: a\n- b: x\n* kết bài: c", "vi")
+        == "- **Mở bài**: a\n- b: x\n* kết bài: c"
+    )
+
+
+def test_only_the_missing_end_is_added_and_an_empty_outline_gets_both():
+    only_open = ensure_frame("- Mở bài: a\n- Giữa: b", "vi").splitlines()
+    assert (
+        only_open[0] == "- Mở bài: a"
+        and only_open[-1].startswith("- Kết bài:")
+        and len(only_open) == 3
+    )
+    only_close = ensure_frame("- Giữa: b\n- Kết bài: c", "vi").splitlines()
+    assert only_close[0].startswith("- Mở bài:") and only_close[-1] == "- Kết bài: c"
+    assert len(ensure_frame("", "vi").splitlines()) == 2
+
+
+def test_the_frame_says_nothing_about_the_material():
+    for language in ("vi", "en"):
+        framed = ensure_frame("- Một: ý", language)
+        assert not any(ch.isdigit() for ch in framed)
+
+
+# --- the stricter post prompt ---------------------------------------------------------------
+
+
+def test_the_post_prompt_forbids_copying_repeating_and_unsupported_claims():
+    system = build_inputs(record(), "write").system
+    for phrase in (
+        "never copy a sentence",
+        "never repeat a point",
+        "state no benefit, result, opinion or general claim",
+        "Cover each part of the outline once, in order",
+        "Write for the audience named in the brief",
+    ):
+        assert phrase in system
+
+
+# --- sentences that say more than the material -----------------------------------------------
+
+SOURCE = (
+    "Mất 2 tháng để làm quen với Claude Code. Tôi triển khai dự án lên môi trường production "
+    "và tự phát triển công cụ viết blog cho portfolio. Tâm đắc nhất là portfolio trở nên đặc sắc."
+)
+
+
+def test_a_claim_the_material_never_makes_is_flagged():
+    post = "Quá trình này giúp tôi tiết kiệm thời gian và tăng năng suất làm việc."
+    assert unsupported_clauses(post, SOURCE) == [
+        "Quá trình này giúp tôi tiết kiệm thời gian và tăng năng suất làm việc"
+    ]
+
+
+def test_sentences_built_from_the_material_are_not_flagged():
+    post = (
+        "# Tiêu đề\n\nTôi triển khai dự án lên môi trường production. "
+        "Tôi tự phát triển công cụ viết blog cho portfolio, và portfolio trở nên đặc sắc."
+    )
+    assert unsupported_clauses(post, SOURCE) == []
+
+
+def test_code_links_headings_and_short_clauses_are_ignored():
+    post = (
+        "## Tiêu đề hoàn toàn mới lạ chưa từng có\n"
+        "Chạy `kubectl apply manifest riêng biệt` và xem https://example.com/trang-moi-hoan-toan.\n"
+        "Rất tốt. Quá hay."
+    )
+    assert unsupported_clauses(post, SOURCE) == []
+
+
+def test_the_worst_clauses_come_first_and_the_list_is_capped():
+    post = "\n".join(
+        [
+            "Ứng dụng này mang lại hiệu quả vượt trội cho doanh nghiệp lớn.",
+            "Tôi triển khai dự án với nhiều bất ngờ thú vị đáng nhớ.",
+        ]
+        + [f"Mục số {i} nói về chuyện hoàn toàn khác biệt không liên quan gì." for i in range(10)]
+    )
+    found = unsupported_clauses(post, SOURCE, limit=3)
+    assert len(found) == 3 and all("Tôi triển khai" not in clause for clause in found)
+
+
+def test_the_check_is_part_of_check_post_and_words_from_the_outline_do_not_count_as_known():
+    rec = record(material=SOURCE)
+    rec["outline"] = "- Lợi ích: giúp tôi tiết kiệm thời gian và tăng năng suất làm việc"
+    inputs = build_inputs(rec, "write")
+    post = "# T\n\nQuá trình này giúp tôi tiết kiệm thời gian và tăng năng suất làm việc."
+    texts = [i["text"] for i in check_post(post, inputs, 0, 0)]
+    assert any(t.startswith("These parts may say more than your material does") for t in texts)
+    clean = "# T\n\nTôi triển khai dự án lên môi trường production."
+    texts = [i["text"] for i in check_post(clean, inputs, 0, 0)]
+    assert not any("may say more" in t for t in texts)
+
+
+# --- where the flagged parts are -------------------------------------------------------------
+
+INVENTED = "Quá trình này giúp tôi tiết kiệm thời gian"
+
+
+def test_spans_point_at_exactly_the_flagged_text_even_around_code_and_links():
+    post = (
+        "# Tiêu đề\n\nTôi triển khai dự án lên môi trường production.\n"
+        f"Chạy `kubectl apply riêng` rồi xem https://example.com/x: {INVENTED}, tăng năng suất.\n"
+    )
+    spans = unsupported_spans(post, SOURCE)
+    flagged = [post[s:e] for s, e, _ in spans]
+    assert INVENTED in flagged
+    assert all(text and text == text.strip() for text in flagged)
+    assert not any("kubectl" in text or "example.com" in text for text in flagged)
+    assert [s for s, _, _ in spans] == sorted(s for s, _, _ in spans)
+
+
+def test_spans_survive_windows_line_endings_and_blank_lines():
+    post = (
+        f"Tôi triển khai dự án lên môi trường production.\r\n\r\n{INVENTED} và tăng năng suất.\r\n"
+    )
+    spans = unsupported_spans(post, SOURCE)
+    assert len(spans) == 1
+    start, end, _ = spans[0]
+    assert post[start:end].startswith("Quá trình này") and "\r" not in post[start:end]
+
+
+def test_flag_pairs_is_what_gets_stored_next_to_the_post():
+    post = f"# T\n\n{INVENTED} và tăng năng suất."
+    pairs = flag_pairs(post, SOURCE)
+    assert pairs and all(isinstance(p, list) and len(p) == 2 for p in pairs)
+    assert post[pairs[0][0] : pairs[0][1]].startswith("Quá trình này")
+
+
+def test_check_post_counts_the_flagged_parts_and_mentions_the_highlight():
+    inputs = build_inputs(record(material=SOURCE), "write")
+    lines = [f"Câu số {i} nói về chuyện hoàn toàn khác biệt không liên quan gì" for i in range(6)]
+    post = "# T\n\n" + ". ".join(lines) + "."
+    items = check_post(post, inputs, 0, 0)
+    text = next(i["text"] for i in items if "may say more" in i["text"])
+    assert "(highlighted in the text)" in text and "and 3 more" in text
+
+
+# --- key points ---------------------------------------------------------------------------------
+
+POINTS = (
+    "- Ban đầu chưa biết đến sự lợi hại của Claude\n"
+    "- Sau khi biết rồi thì đã liều mạng bỏ ra 600k mua tài khoản Claude Pro\n"
+    "* Thử ứng dụng Claude Code vào công việc, trong đó có triển khai dự án\n"
+    "1. Tự phát triển công cụ viết blog và deploy lên portfolio\n"
+)
+OUTLINE_TEXT = (
+    "- Mở bài: Tôi từng chỉ biết ChatGPT, nay làm việc cùng Claude Pro.\n"
+    "- Ứng dụng: Tôi thử ứng dụng Claude Code vào công việc, từ triển khai dự án.\n"
+    "- Công cụ cá nhân: Tôi tự phát triển công cụ viết blog và deploy lên portfolio.\n"
+)
+
+
+def test_points_the_outline_leaves_out_are_listed_with_their_original_wording():
+    assert uncovered_points(POINTS, OUTLINE_TEXT) == [
+        "Ban đầu chưa biết đến sự lợi hại của Claude",
+        "Sau khi biết rồi thì đã liều mạng bỏ ra 600k mua tài khoản Claude Pro",
+    ]
+
+
+def test_a_number_in_a_point_must_appear_in_the_text():
+    point = "- Bỏ ra 600k mua tài khoản"
+    assert uncovered_points(point, "- Mua tài khoản Pro, bỏ ra tiền") == [
+        "Bỏ ra 600k mua tài khoản"
+    ]
+    assert uncovered_points(point, "- Bỏ ra 600k mua tài khoản Pro") == []
+
+
+def test_points_are_covered_by_words_in_any_order_and_list_markers_are_ignored():
+    assert (
+        uncovered_points("- Triển khai dự án lên production", "dự án: triển khai production") == []
+    )
+    assert uncovered_points("1) Một\n2) Hai ba", "hai ba") == []
+
+
+def test_no_points_or_blank_lines_mean_nothing_is_missing():
+    assert uncovered_points("", OUTLINE_TEXT) == []
+    assert uncovered_points("\n  \n- \n", OUTLINE_TEXT) == []
+
+
+def test_the_post_check_names_the_key_points_the_post_dropped():
+    inputs = build_inputs(record(points=POINTS, material=SOURCE), "write")
+    post = "# T\n\nTôi thử ứng dụng Claude Code vào công việc và tự phát triển công cụ viết blog."
+    texts = [i["text"] for i in check_post(post, inputs, 0, 0)]
+    cover = next(t for t in texts if t.startswith("Key points the post does not seem to cover"))
+    assert "600k" in cover and "Ban đầu chưa biết" in cover and "Thử ứng dụng" not in cover

@@ -4,7 +4,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
-from nightshift.compose import OUTLINE_TOKENS, normalize_brief
+from nightshift.compose import OUTLINE_TOKENS, ensure_frame, normalize_brief
 from nightshift.composer import Composer
 from nightshift.gate import Gate
 from nightshift.ollama import OllamaConfig, OllamaError, generate_stream
@@ -87,7 +87,12 @@ def test_an_outline_run_saves_the_outline_and_moves_the_post_on(store, slug):
     composer.wait()
     assert composer.state.state == "done" and composer.state.kind == "outline"
     record = store.post(slug)
-    assert record["stage"] == "outline" and record["outline"] == "- ý một\n- ý hai"
+    assert record["stage"] == "outline"
+    assert record["outline"] == ensure_frame("- ý một\n- ý hai", "vi")
+    assert (
+        record["outline"].startswith("- Mở bài:")
+        and "- ý một\n- ý hai\n- Kết bài:" in record["outline"]
+    )
     assert seen[0]["num_predict"] == OUTLINE_TOKENS
 
 
@@ -283,3 +288,15 @@ def test_the_live_text_never_shows_raw_tokens_or_hidden_terms(store, slug):
     composer.wait()
     assert seen and all("[[" not in text and "EVN" not in text for text in seen)
     assert "`helm uninstall rancher`" in seen[1] and "[đã ẩn]" in seen[0]
+
+
+def test_a_written_post_keeps_the_places_that_may_say_more_than_the_material(store, slug):
+    claim = "Việc này giúp tôi tiết kiệm thời gian và tăng năng suất."
+    text = f"# Gỡ Rancher\n\nTôi chạy [[CODE_1]]. {claim}"
+    composer = composer_with(store, fake_stream([text]))
+    composer.start(slug, "write")
+    composer.wait()
+    record = store.post(slug)
+    flagged = [record["post"][s:e] for s, e in record["flags"]]
+    assert any("tiết kiệm thời gian" in part for part in flagged)
+    assert not any("helm" in part for part in flagged)

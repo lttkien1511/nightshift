@@ -6,7 +6,7 @@ import html
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from .compose import LENGTHS, LIMITS, TONES
+from .compose import LENGTHS, LIMITS, TONES, uncovered_points
 from .composer import PostRun
 from .storage import PostItem
 
@@ -42,6 +42,41 @@ def posts_section(posts: Sequence[PostItem], active: str, running: str) -> str:
         '<a class="new-draft alt" href="/posts/new">New blog post</a>'
         f'<ul class="queue posts">{listing}</ul>'
     )
+
+
+def _spans(text: str, flags: object) -> list[tuple[int, int]]:
+    """The flagged spans that are well formed, in order and without overlaps."""
+    found: list[tuple[int, int]] = []
+    if isinstance(flags, list):
+        for pair in flags:
+            if (
+                isinstance(pair, list)
+                and len(pair) == 2
+                and all(isinstance(v, int) and not isinstance(v, bool) for v in pair)
+            ):
+                start, end = pair
+                if 0 <= start < end <= len(text):
+                    found.append((start, end))
+    kept: list[tuple[int, int]] = []
+    for start, end in sorted(found):
+        if not kept or start >= kept[-1][1]:
+            kept.append((start, end))
+    return kept
+
+
+def marked(text: str, flags: object) -> str:
+    """The post as HTML with the flagged parts highlighted."""
+    pieces: list[str] = []
+    position = 0
+    for start, end in _spans(text, flags):
+        pieces.append(esc(text[position:start]))
+        pieces.append(
+            '<mark class="odd" title="May say more than your material does">'
+            f"{esc(text[start:end])}</mark>"
+        )
+        position = end
+    pieces.append(esc(text[position:]))
+    return "".join(pieces)
 
 
 def _select(name: str, options: Mapping[str, str], chosen: str) -> str:
@@ -205,6 +240,16 @@ def _outline_card(slug: str, record: Mapping[str, Any], models: Sequence[str], b
     picker = _model_select(models)
     if not models or busy:
         return ""
+    brief = record.get("brief")
+    points = str(brief.get("points", "")) if isinstance(brief, dict) else ""
+    missing = uncovered_points(points, outline) if outline else []
+    note = (
+        '<div class="banner"><b>These key points do not seem to be in the outline:</b><ul>'
+        + "".join(f"<li>{esc(point)}</li>" for point in missing)
+        + "</ul>Add them below, or the post may leave them out.</div>"
+        if missing
+        else ""
+    )
     if not outline:
         return (
             '<section class="card"><h2>Outline</h2>'
@@ -218,6 +263,7 @@ def _outline_card(slug: str, record: Mapping[str, Any], models: Sequence[str], b
     return (
         '<section class="card"><h2>Outline</h2>'
         '<p class="hint">Edit it freely. The post follows this outline.</p>'
+        f"{note}"
         f'<form method="post" action="{base}/write">'
         f'<textarea name="outline" class="outline" rows="8" maxlength="{LIMITS["outline"]}">'
         f"\n{esc(outline)}</textarea>"
@@ -238,6 +284,13 @@ def _post_card(slug: str, record: Mapping[str, Any], models: Sequence[str], busy
         return ""
     base = f"/posts/{esc(slug)}"
     checks = record.get("checks") or []
+    count = len(_spans(post, record.get("flags")))
+    legend = (
+        f'<p class="hint"><mark class="odd">{count} highlighted part(s)</mark> may say more '
+        "than your material does. Read each one, then delete it or rewrite it.</p>"
+        if count
+        else ""
+    )
     items = "".join(
         f'<li class="{esc(c.get("level", "info"))}">{esc(c.get("text", ""))}</li>'
         for c in checks
@@ -261,7 +314,8 @@ def _post_card(slug: str, record: Mapping[str, Any], models: Sequence[str], busy
         "These checks look for numbers and names the material does not contain, and for "
         "anything that looks private. They are not a substitute for reading it.</p>"
         f"{verdict}"
-        f'<div class="ppost">{esc(post)}</div>'
+        f"{legend}"
+        f'<div class="ppost">{marked(post, record.get("flags"))}</div>'
         '<div class="buttons">'
         f'<a class="btn" href="{base}/post.md">Download .md</a>'
         f'<form class="inline" method="post" action="{base}/to-draft">'

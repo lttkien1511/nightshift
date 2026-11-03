@@ -120,6 +120,7 @@ class Inputs:
     terms: list[tuple[str, str]]
     language: str
     target_words: int
+    points: str
     source: str  # everything the model was given, for the fact check
 
 
@@ -158,7 +159,11 @@ def _system(kind: str, brief: Mapping[str, str]) -> str:
         "Use ONLY facts, names, numbers, places, dates and commands that appear in the material. "
         "Never invent them and never write quotations. "
         f"When the post needs something the material does not give, write {marker} instead of "
-        f"making it up. {protected}"
+        "making it up, and state no benefit, result, opinion or general claim that the material "
+        "does not state. Rewrite everything in your own words and fix awkward phrasing: never "
+        "copy a sentence from the material. Cover each part of the outline once, in order, so the "
+        "story runs naturally, and never repeat a point in two sections. "
+        f"Write for the audience named in the brief. {protected}"
         f"Write in {language}, in a tone that is {TONES[brief['tone']]}. "
         "Reply with Markdown only: start with a single '# ' title line, then paragraphs, with "
         "'## ' headings only if they help. No front matter, no commentary before or after."
@@ -185,6 +190,19 @@ def build_inputs(record: Mapping[str, object], kind: str) -> Inputs:
     if brief.get("material"):
         parts.append(f"Material (the only source of facts):\n{brief['material']}")
     source = "\n\n".join(parts)
+    # What the checks treat as known: only what the person wrote. The outline is the model's
+    # own work, so a claim it invented there must not make the same claim in the post look fine.
+    facts = "\n\n".join(
+        text
+        for text in (
+            brief["topic"],
+            brief.get("audience", ""),
+            brief.get("tone_note", ""),
+            brief.get("points", ""),
+            brief.get("material", ""),
+        )
+        if text
+    )
     hidden, _ = hide_terms(source, terms)
     try:
         masked = mask(hidden)
@@ -198,7 +216,8 @@ def build_inputs(record: Mapping[str, object], kind: str) -> Inputs:
         terms=terms,
         language=brief["language"],
         target_words=words,
-        source=source,
+        points=brief.get("points", ""),
+        source=facts,
     )
 
 
@@ -247,6 +266,217 @@ def preview(text: str, inputs: Inputs) -> str:
     return text
 
 
+_FRAME_ITEM = re.compile(r"^\s*[-*]\s*[*_]*\s*(?P<label>[^:*_]+?)[*_]*\s*:", re.IGNORECASE)
+FRAME_TEXT = {
+    "vi": (
+        "Mở bài: Giới thiệu chủ đề và lý do bạn viết bài này.",
+        "Kết bài: Tóm lại điều rút ra và điều bạn muốn người đọc nhớ.",
+    ),
+    "en": (
+        "Opening: Introduce the topic and why you are writing about it.",
+        "Closing: Sum up what you learned and what the reader should remember.",
+    ),
+}
+
+
+def ensure_frame(outline: str, language: str) -> str:
+    """Make sure the outline begins with an opening and ends with a closing.
+
+    A small model sometimes forgets them even when told, so the code adds a neutral one that
+    says nothing about the material and can be edited like the rest.
+    """
+    opening_label, closing_label = OUTLINE_PARTS[language]
+    opening, closing = FRAME_TEXT[language]
+    lines = [line for line in outline.strip().splitlines() if line.strip()]
+
+    def label(line: str) -> str:
+        found = _FRAME_ITEM.match(line)
+        return found.group("label").strip().lower() if found else ""
+
+    if not lines or label(lines[0]) != opening_label.lower():
+        lines.insert(0, f"- {opening}")
+    if label(lines[-1]) != closing_label.lower():
+        lines.append(f"- {closing}")
+    return "\n".join(lines)
+
+
+_WORDS = re.compile(r"\w+")
+_CODE_OR_LINK = re.compile(r"`[^`]*`|https?://\S*[^\s.,;:!?)\]]|\[\[[A-Z]+_\d+\]\]")
+_CLAUSE = re.compile(r"[^.!?;:,\n]+")
+# Function words: a clause is judged on its content words only. Vietnamese and English.
+STOPWORDS = frozenset(
+    [
+        "và",
+        "của",
+        "là",
+        "có",
+        "được",
+        "cho",
+        "các",
+        "những",
+        "một",
+        "này",
+        "đó",
+        "khi",
+        "để",
+        "với",
+        "trong",
+        "ra",
+        "vào",
+        "lên",
+        "không",
+        "chỉ",
+        "cũng",
+        "đã",
+        "sẽ",
+        "đang",
+        "thì",
+        "mà",
+        "như",
+        "hơn",
+        "rất",
+        "từ",
+        "đến",
+        "tôi",
+        "mình",
+        "bạn",
+        "chúng",
+        "ta",
+        "họ",
+        "nó",
+        "cả",
+        "mọi",
+        "nhiều",
+        "ít",
+        "bằng",
+        "về",
+        "theo",
+        "sau",
+        "trước",
+        "tại",
+        "nên",
+        "vì",
+        "nếu",
+        "còn",
+        "lại",
+        "đều",
+        "cùng",
+        "thêm",
+        "the",
+        "a",
+        "an",
+        "of",
+        "to",
+        "and",
+        "in",
+        "is",
+        "are",
+        "was",
+        "were",
+        "for",
+        "on",
+        "with",
+        "that",
+        "this",
+        "it",
+        "as",
+        "be",
+        "by",
+        "at",
+        "from",
+        "or",
+        "i",
+        "my",
+        "we",
+        "our",
+        "you",
+        "your",
+        "they",
+        "them",
+        "their",
+        "not",
+        "but",
+        "so",
+        "if",
+        "then",
+        "than",
+        "also",
+        "just",
+    ]
+)
+
+
+def unsupported_spans(post: str, source: str) -> list[tuple[int, int, float]]:
+    """Where the post has clauses made mostly of words the material never uses.
+
+    Returns ``(start, end, share of unknown words)`` positions in ``post``, in reading order.
+    Code and links are blanked out with spaces, not removed, so the positions stay exact.
+    This is a heuristic: a good rewrite in other words can trip it, so it only points at
+    places to read and never rejects anything.
+    """
+    known = {word.lower() for word in _WORDS.findall(source)}
+    found: list[tuple[int, int, float]] = []
+    offset = 0
+    for line in post.splitlines(keepends=True):
+        text = line.rstrip("\r\n")
+        if not text.lstrip().startswith(("#", "```")):
+            blanked = _CODE_OR_LINK.sub(lambda m: " " * len(m.group()), text)
+            for clause in _CLAUSE.finditer(blanked):
+                raw = clause.group()
+                words = [w.lower() for w in _WORDS.findall(raw)]
+                content = [
+                    w for w in words if w not in STOPWORDS and len(w) > 1 and not w.isdigit()
+                ]
+                if len(content) < 4:
+                    continue
+                missing = [w for w in content if w not in known]
+                ratio = len(missing) / len(content)
+                if len(missing) >= 2 and ratio >= 0.4:
+                    start = offset + clause.start() + (len(raw) - len(raw.lstrip()))
+                    end = offset + clause.start() + len(raw.rstrip())
+                    found.append((start, end, ratio))
+        offset += len(line)
+    return found
+
+
+def unsupported_clauses(post: str, source: str, limit: int = 4) -> list[str]:
+    """The worst of those clauses as text, most suspicious first."""
+    worst = sorted(unsupported_spans(post, source), key=lambda span: span[2], reverse=True)
+    return [post[start:end] for start, end, _ in worst[:limit]]
+
+
+def flag_pairs(post: str, source: str) -> list[list[int]]:
+    """The spans in a form that can be stored next to the post."""
+    return [[start, end] for start, end, _ in unsupported_spans(post, source)]
+
+
+_BULLET = re.compile(r"^\s*(?:[-*\u2022]|\d+[.)])\s*")
+
+
+def uncovered_points(points: str, text: str, threshold: float = 0.5) -> list[str]:
+    """Key points that ``text`` (an outline or the post) does not seem to cover.
+
+    A point counts as covered when every number in it appears in the text and at least
+    ``threshold`` of its other content words do. Like the other checks it only points.
+    """
+    known = {word.lower() for word in _WORDS.findall(text)}
+    missing: list[str] = []
+    for raw in points.splitlines():
+        line = _BULLET.sub("", raw).strip()
+        words = [w.lower() for w in _WORDS.findall(line)]
+        numbers = [w for w in words if any(ch.isdigit() for ch in w)]
+        content = [w for w in words if w not in STOPWORDS and len(w) > 1 and w not in numbers]
+        if not content and not numbers:
+            continue
+        found = sum(1 for w in content if w in known)
+        covered = all(n in known for n in numbers) and (
+            not content or found / len(content) >= threshold
+        )
+        if not covered:
+            missing.append(line)
+    return missing
+
+
 def _numbers(text: str) -> set[str]:
     return set(_NUMBER.findall(text))
 
@@ -282,6 +512,26 @@ def check_post(post: str, inputs: Inputs, redacted: int, invented: int) -> list[
         )
     if invented:
         found.append({"level": "info", "text": f"Removed {invented} token(s) the model made up."})
+    spans = unsupported_spans(post, inputs.source)
+    if spans:
+        worst = unsupported_clauses(post, inputs.source, limit=3)
+        more = len(spans) - len(worst)
+        shown = "; ".join(f"\u201c{clause[:90]}\u201d" for clause in worst)
+        if more > 0:
+            shown += f" and {more} more"
+        found.append(
+            {
+                "level": "warn",
+                "text": "These parts may say more than your material does "
+                f"(highlighted in the text): {shown}",
+            }
+        )
+    skipped = uncovered_points(inputs.points, post)
+    if skipped:
+        listed = "; ".join(f"\u201c{point[:80]}\u201d" for point in skipped)
+        found.append(
+            {"level": "warn", "text": f"Key points the post does not seem to cover: {listed}"}
+        )
     todos = len(_TODO.findall(post))
     if todos:
         found.append({"level": "warn", "text": f"{todos} place(s) marked as missing material."})

@@ -3,7 +3,7 @@ import threading
 import pytest
 from fastapi.testclient import TestClient
 
-from nightshift.compose import OUTLINE_TOKENS
+from nightshift.compose import OUTLINE_TOKENS, ensure_frame
 from nightshift.composer import Composer
 from nightshift.gate import Gate
 from nightshift.runner import Runner
@@ -150,7 +150,8 @@ def slug_of(response):
 def test_suggest_an_outline_then_edit_it_then_write(client, store, composer, script):
     slug = slug_of(create(client, action="outline"))
     composer.wait()
-    assert store.post(slug)["outline"] == OUTLINE and store.post(slug)["stage"] == "outline"
+    assert store.post(slug)["outline"] == ensure_frame(OUTLINE, "vi")
+    assert store.post(slug)["stage"] == "outline"
     page = client.get(f"/posts/{slug}").text
     assert '<textarea name="outline" class="outline"' in page and "- Vì sao gỡ" in page
 
@@ -343,3 +344,49 @@ def test_saving_an_empty_outline_clears_it_and_bad_saves_are_refused(
     client.post(f"/posts/{slug}/cancel")
     script.hold.set()
     composer.wait()
+
+
+MARK = '<mark class="odd" title="May say more than your material does">'
+
+
+def test_flagged_parts_are_highlighted_in_the_post_and_escaped(client, store):
+    slug = slug_of(create(client))
+    text = "# T\n\nCâu bình thường. Điều này <giúp> tôi tiết kiệm thời gian & tăng năng suất."
+    start = text.index("Điều này")
+    flags = [[start, len(text) - 1]]
+    store.update_post(slug, post=text, stage="done", model="m1", checks=[], flags=flags)
+    page = client.get(f"/posts/{slug}").text
+    assert (
+        f"{MARK}Điều này &lt;giúp&gt; tôi tiết kiệm thời gian &amp; tăng năng suất</mark>." in page
+    )
+    assert "1 highlighted part(s)" in page and "<giúp>" not in page
+
+
+def test_bad_overlapping_or_missing_flags_never_break_the_page(client, store):
+    slug = slug_of(create(client))
+    bad = [[5, 2], [-1, 3], [0, 99], ["a", 1], [1], [True, 3], [0, 3], [2, 5]]
+    store.update_post(slug, post="Một hai ba.", stage="done", model="m1", checks=[], flags=bad)
+    page = client.get(f"/posts/{slug}").text
+    assert f"{MARK}Một</mark> hai ba." in page and "1 highlighted part(s)" in page
+    store.update_post(slug, flags=None)
+    page = client.get(f"/posts/{slug}").text
+    assert 'class="odd"' not in page and "highlighted part" not in page
+
+
+def test_the_outline_warns_about_key_points_it_does_not_contain(client, store):
+    slug = slug_of(create(client, points="tính năng mới\nkết quả đo được"))
+    client.post(f"/posts/{slug}/outline/save", data={"outline": "- Mở bài: chào"})
+    page = client.get(f"/posts/{slug}").text
+    assert "These key points do not seem to be in the outline:" in page
+    assert "<li>tính năng mới</li>" in page and "<li>kết quả đo được</li>" in page
+    covered = "- Tính năng mới: a\n- Kết quả đo được: b"
+    client.post(f"/posts/{slug}/outline/save", data={"outline": covered})
+    assert "do not seem to be in the outline" not in client.get(f"/posts/{slug}").text
+
+
+def test_the_post_lists_the_key_points_it_dropped_among_its_checks(client, composer):
+    slug = slug_of(create(client, action="write", points="tính năng mới\nkết quả đo được"))
+    composer.wait()
+    page = client.get(f"/posts/{slug}").text
+    assert "Key points the post does not seem to cover" in page
+    assert "tính năng mới" in page and "kết quả đo được" in page
