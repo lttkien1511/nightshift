@@ -146,3 +146,6 @@ main,.side{min-width:0}
   .strip{flex-basis:100%;order:3}
   .actions .primary{flex:1 1 100%}
 }
+.btn{display:inline-block;padding:.45rem .9rem;border:1px solid var(--line);border-radius:8px;background:var(--panel);color:var(--text);text-decoration:none;font:inherit;cursor:pointer}
+.btn:hover{border-color:var(--accent-ink)}
+.titlebtns{display:flex;gap:.5rem;flex:none}

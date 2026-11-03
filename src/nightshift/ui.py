@@ -270,7 +270,11 @@ def draft_main(
         'data-confirm="Delete this draft and all of its results?">'
         '<button class="danger">Delete</button></form>'
     )
-    title = f'<div class="titlebar"><h1>{esc(slug)}</h1>{delete}</div>'
+    edit = f'<a class="btn" href="{base}/edit">Edit</a>'
+    title = (
+        f'<div class="titlebar"><h1>{esc(slug)}</h1>'
+        f'<div class="titlebtns">{edit}{delete}</div></div>'
+    )
     original = (
         '<details class="card"><summary>Original draft</summary>'
         f'<pre class="plain">{esc(text)}</pre></details>'
@@ -341,3 +345,34 @@ def draft_main(
         f'<input type="hidden" name="model" value="{esc(chosen_key)}">{actions}{blocks_html}</form>'
     )
     return f"{title}{run_html}{tabs}{summary_html}{stale_html}{filters}{form}{original}"
+
+
+def edit_main(slug: str, text: str, max_bytes: int, can_run: bool = False) -> str:
+    """The form for changing a draft that is already in the queue."""
+    base = f"/drafts/{esc(slug)}"
+    now_button = (
+        '<button class="secondary" name="run" value="1">Save and run now</button>'
+        if can_run
+        else ""
+    )
+    return (
+        f'<div class="titlebar"><h1>Edit {esc(slug)}</h1></div>'
+        '<p class="lead">Saving replaces the draft. Results from earlier runs no longer match it, '
+        f"so the worker redoes them tonight{', or press Save and run now' if can_run else ''}.</p>"
+        f'<form class="card" method="post" action="{base}/edit">'
+        '<label>Name <span class="hint">(it is the address of the draft; a new name renames it, '
+        "results included)</span>"
+        f'<input name="name" id="name" required maxlength="80" autocomplete="off" '
+        f'value="{esc(slug)}"></label>'
+        '<label>Replace from a file <span class="hint">(optional, .md or .txt)</span>'
+        '<input type="file" id="file" accept=".md,.markdown,.txt,text/markdown,text/plain">'
+        "</label>"
+        # A newline right after the opening tag is dropped by the browser, so a draft that
+        # itself starts with a blank line comes back unchanged.
+        f'<label>Markdown<textarea name="text" id="text" rows="22" required>\n{esc(text)}'
+        "</textarea></label>"
+        f'<p class="counter" data-max="{_count(max_bytes)}"><span id="count">0</span> of '
+        f"{_count(max_bytes):,} bytes</p>"
+        f'<div class="buttons"><button class="primary">Save</button>{now_button}'
+        f'<a class="btn" href="{base}">Cancel</a></div></form>'
+    )

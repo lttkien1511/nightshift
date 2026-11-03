@@ -18,7 +18,16 @@ from .merge import MergeError, merge
 from .ollama import OllamaConfig, OllamaEditor
 from .runner import Busy, Runner, RunnerError
 from .status import snapshot
-from .storage import DraftTooLarge, QueueFull, StorageError, Store, digest, model_file
+from .storage import (
+    DraftTooLarge,
+    NameTaken,
+    QueueFull,
+    StorageError,
+    Store,
+    digest,
+    model_file,
+    slugify,
+)
 
 _SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
 _STATIC = Path(__file__).parent / "static"
@@ -36,6 +45,11 @@ def store_from_env() -> Store:
         max_bytes=int(os.environ.get("NIGHTSHIFT_MAX_BYTES", "1000000")),
         max_queue=int(os.environ.get("NIGHTSHIFT_MAX_QUEUE", "20")),
     )
+
+
+def _lf(text: str) -> str:
+    """Browsers send form text with CRLF line breaks; drafts are stored with plain LF."""
+    return text.replace("\r\n", "\n")
 
 
 def runner_from_env(store: Store) -> Runner:
@@ -131,7 +145,7 @@ def create_app(store: Store | None = None, runner: Runner | None = None) -> Fast
         run: Annotated[str, Form()] = "",
     ) -> RedirectResponse:
         try:
-            slug = store.save(name, text)
+            slug = store.save(name, _lf(text))
         except DraftTooLarge as exc:
             raise HTTPException(413, str(exc)) from exc
         except QueueFull as exc:
@@ -154,6 +168,46 @@ def create_app(store: Store | None = None, runner: Runner | None = None) -> Fast
             slug, text, store.results(slug), model=model, show=show, run_html=panel
         )
         return render(slug, main, active=slug)
+
+    @app.get("/drafts/{slug}/edit", response_class=HTMLResponse)
+    def edit_form(slug: str) -> HTMLResponse:
+        text = store.read(slug)
+        if text is None:
+            raise HTTPException(404, "no such draft")
+        main = ui.edit_main(slug, text, store.max_bytes, bool(runner.models))
+        return render(f"Edit {slug}", main, active=slug)
+
+    @app.post("/drafts/{slug}/edit")
+    def save_edit(
+        slug: str,
+        name: Annotated[str, Form()],
+        text: Annotated[str, Form()],
+        run: Annotated[str, Form()] = "",
+    ) -> RedirectResponse:
+        current = store.read(slug)
+        if current is None:
+            raise HTTPException(404, "no such draft")
+        state = runner.state
+        if state is not None and state.running and state.slug == slug:
+            raise HTTPException(409, "the model is editing this draft right now; cancel that first")
+        new_text = _lf(text)
+        try:
+            new_slug = slugify(name)
+            store.validate(new_text)
+            if new_slug != slug:
+                store.rename(slug, new_slug)
+            if new_text != _lf(current):
+                store.save(new_slug, new_text)
+        except NameTaken as exc:
+            raise HTTPException(409, str(exc)) from exc
+        except DraftTooLarge as exc:
+            raise HTTPException(413, str(exc)) from exc
+        except StorageError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        if run:
+            with contextlib.suppress(RunnerError):
+                runner.start(new_slug)
+        return RedirectResponse(f"/drafts/{new_slug}", status_code=303)
 
     @app.post("/drafts/{slug}/run")
     def run_now(slug: str, model: Annotated[str, Form()] = "") -> RedirectResponse:

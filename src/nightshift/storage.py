@@ -26,6 +26,10 @@ class QueueFull(StorageError):
     pass
 
 
+class NameTaken(StorageError):
+    pass
+
+
 def slugify(name: str) -> str:
     """Turn a title such as ``Gỡ Rancher.md`` into a safe file name such as ``go-rancher``."""
     base = name.strip()
@@ -160,6 +164,29 @@ class Store:
         path.unlink()
         shutil.rmtree(self.outbox / slug, ignore_errors=True)
         return True
+
+    def validate(self, text: str) -> None:
+        """Raise the error ``save`` would raise for this text, without saving anything."""
+        if not text.strip():
+            raise StorageError("the draft is empty")
+        if len(text.encode("utf-8")) > self.max_bytes:
+            raise DraftTooLarge(f"the draft is larger than {self.max_bytes} bytes")
+
+    def rename(self, old: str, new: str) -> None:
+        """Give a draft another name. Its results move with it and stay valid."""
+        if not is_slug(old) or not is_slug(new):
+            raise StorageError("the draft name has no usable letters or digits")
+        source = self.inbox / f"{old}.md"
+        target = self.inbox / f"{new}.md"
+        if not source.is_file():
+            raise StorageError("no such draft")
+        if target.exists():
+            raise NameTaken("a draft with that name already exists")
+        source.replace(target)
+        shutil.rmtree(self.outbox / new, ignore_errors=True)
+        results = self.outbox / old
+        if results.is_dir():
+            results.replace(self.outbox / new)
 
     def drafts(self) -> list[Draft]:
         found = []
