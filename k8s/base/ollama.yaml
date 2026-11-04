@@ -83,7 +83,7 @@ spec:
               memory: 1Gi
             limits:
               cpu: "6"
-              memory: 8Gi
+              memory: 13Gi
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
