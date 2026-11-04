@@ -353,3 +353,12 @@ def test_the_written_post_loses_copied_headings_and_repeated_sentences(store, sl
     record = store.post(slug)
     assert "Mở bài" not in record["post"] and record["post"].count("gỡ nhầm") == 1
     assert any("1 repeated sentence" in c["text"] for c in record["checks"])
+
+
+def test_a_post_cut_off_by_the_token_cap_loses_its_last_half_sentence_and_says_so(store, slug):
+    composer = composer_with(store, fake_stream(["# Tiêu đề\n\nĐoạn đầu đã xong. Đoạn dở"]))
+    composer.start(slug, "write")
+    composer.wait()
+    record = store.post(slug)
+    assert record["post"].rstrip().endswith("đã xong.")
+    assert any("ran out of room" in c["text"] for c in record["checks"])

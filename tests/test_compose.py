@@ -17,6 +17,7 @@ from nightshift.compose import (
     parse_voices,
     restore,
     tidy_post,
+    trim_cut_off,
     uncovered_points,
     unsupported_clauses,
     unsupported_spans,
@@ -97,7 +98,7 @@ def test_prompts_follow_the_brief():
     write = build_inputs(record(language="en", tone="technical", length="medium"), "write")
     assert "English" in write.system and "technical and concise" in write.system
     assert "[TODO: ...]" in write.system and "'# ' title" in write.system
-    assert write.num_predict == 1800 and write.target_words == 600
+    assert write.num_predict == 2600 and write.target_words == 600
     outline = build_inputs(record(), "outline")
     assert "Mở bài" in outline.system and "Kết bài" in outline.system
     assert "Vietnamese" in outline.system and "Choose the sections yourself" in outline.system
@@ -553,3 +554,16 @@ def test_a_sentence_repeated_word_for_word_is_removed_but_code_and_short_ones_st
     assert fixed.count("Mình nghĩ chắc sẽ gỡ nhầm file.") == 1
     assert fixed.count("Nhưng nó hỏi lại mình.") == 1 and fixed.count("Ừ.") == 2
     assert "```\nmình nghĩ chắc sẽ gỡ nhầm file.\n```" in fixed
+
+
+def test_a_sentence_cut_off_at_the_end_is_dropped_with_its_empty_heading():
+    whole = "# T\n\nMột đoạn xong rồi. Và câu này dở"
+    text, cut = trim_cut_off(whole)
+    assert cut and text.endswith("Một đoạn xong rồi.\n")
+    text, cut = trim_cut_off(
+        "# T\n\nĐoạn một xong.\n\n## Cuối cùng\n\nTôi đã tự phát triển công cụ"
+    )
+    assert cut and text.rstrip().endswith("Đoạn một xong.") and "Cuối cùng" not in text
+    text, cut = trim_cut_off("# T\n\nĐoạn một xong.\n")
+    assert not cut and text == "# T\n\nĐoạn một xong.\n"
+    assert not trim_cut_off("```\ncode\n```")[1]

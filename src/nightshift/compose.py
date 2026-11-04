@@ -19,7 +19,7 @@ LANGUAGES = {"vi": "Vietnamese", "en": "English"}
 TODO_MARKER = {"vi": "[cần bổ sung: ...]", "en": "[TODO: ...]"}
 HIDDEN_LABEL = {"vi": "[đã ẩn]", "en": "[hidden]"}
 # length -> (target words, token cap for the answer)
-LENGTHS = {"short": (300, 900), "medium": (600, 1800)}
+LENGTHS = {"short": (300, 1500), "medium": (600, 2600)}
 # how far the post may go beyond the notes: stay close to them, or explain and reflect around them
 MODES = ("close", "expand")
 SENTENCES = ("short", "mixed", "long")
@@ -461,6 +461,29 @@ def tidy_post(text: str, language: str) -> tuple[str, int]:
         if kept:
             out.append(" ".join(kept))
     return re.sub(r"\n{3,}", "\n\n", "\n".join(out)).strip(), removed
+
+
+_ENDINGS = '.!?…)"”’»`*'
+
+
+def trim_cut_off(text: str) -> tuple[str, bool]:
+    """Drop an unfinished last sentence, which is what a model leaves when it runs out of room.
+
+    Returns the text and whether something was dropped.
+    """
+    body = text.rstrip()
+    if not body or body[-1] in _ENDINGS:
+        return text, False
+    paragraphs = body.split("\n\n")
+    last = paragraphs[-1]
+    ends = [m.end() for m in re.finditer(r"[.!?…][\"”’)»]*(?=\s|$)", last)]
+    if ends:
+        paragraphs[-1] = last[: ends[-1]]
+    else:
+        paragraphs.pop()
+    while paragraphs and paragraphs[-1].lstrip().startswith("#"):
+        paragraphs.pop()
+    return "\n\n".join(paragraphs).rstrip() + "\n", True
 
 
 def parse_voices(text: str) -> list[str]:

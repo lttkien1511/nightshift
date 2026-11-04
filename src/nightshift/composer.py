@@ -24,6 +24,7 @@ from .compose import (
     preview,
     restore,
     tidy_post,
+    trim_cut_off,
 )
 from .gate import Gate
 from .runner import Busy, RunnerError
@@ -153,7 +154,17 @@ class Composer:
                 fields.update(voices=voices)
             else:
                 text, repeated = tidy_post(text, inputs.language)
+                text, cut = trim_cut_off(text)
                 checks = check_post(text, inputs, redacted, invented)
+                if cut:
+                    checks.insert(
+                        0,
+                        {
+                            "level": "warn",
+                            "text": "The model ran out of room and the last sentence was cut. "
+                            "Ask for a medium length, or finish the ending yourself.",
+                        },
+                    )
                 if repeated:
                     checks.append(
                         {"level": "info", "text": f"Removed {repeated} repeated sentence(s)."}
