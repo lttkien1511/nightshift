@@ -19,6 +19,12 @@ TONE_LABEL = {
 }
 LENGTH_LABEL = {"short": "Short, about 300 words", "medium": "Medium, about 600 words"}
 LANGUAGE_LABEL = {"vi": "Vietnamese", "en": "English"}
+MODE_LABEL = {
+    "expand": "Expand: explain and reflect in my voice",
+    "close": "Stay close to my notes",
+}
+SENTENCE_LABEL = {"short": "Short", "mixed": "A mix", "long": "Longer and flowing"}
+HUMOR_LABEL = {"none": "None", "light": "A little", "playful": "Playful"}
 
 
 def esc(value: object) -> str:
@@ -102,7 +108,15 @@ def brief_form(
     existing: bool = False,
 ) -> str:
     """The brief: what the post is about, for whom, in what voice, and what must stay out."""
-    v = {"tone": "conversational", "length": "short", "language": "vi", **(values or {})}
+    v = {
+        "tone": "conversational",
+        "length": "short",
+        "language": "vi",
+        "mode": "expand",
+        "voice_sentences": "mixed",
+        "voice_humor": "light",
+        **(values or {}),
+    }
     note = f'<p class="banner">{esc(error)}</p>' if error else ""
     tones = {k: TONE_LABEL[k] for k in TONES}
     lengths = {k: LENGTH_LABEL[k] for k in LENGTHS}
@@ -148,7 +162,34 @@ def brief_form(
         + f"<label>Length {_select('length', lengths, v['length'])}</label>"
         + f"<label>Language {_select('language', LANGUAGE_LABEL, v['language'])}</label>"
         + "</div>"
+        + '<fieldset class="voice"><legend>Your voice</legend><div class="grid2">'
+        + f"<label>How far may it go {_select('mode', MODE_LABEL, v['mode'])}</label>"
+        + text(
+            "voice_address", "What you call yourself and the reader", "for example mình - các bạn"
+        )
+        + "<label>Sentence length "
+        + _select("voice_sentences", SENTENCE_LABEL, v["voice_sentences"])
+        + "</label>"
+        + f"<label>Humor {_select('voice_humor', HUMOR_LABEL, v['voice_humor'])}</label>"
+        + "</div>"
+        + text("voice_avoid", "Words and phrases you never use", "separated by commas")
         + text("tone_note", "Anything else about the voice", "optional")
+        + area(
+            "voice_sample",
+            "A sample of your voice",
+            "optional: a paragraph the way you write or talk. Not sure? Save the brief, then "
+            "let the model try three voices and pick the closest",
+            4,
+        )
+        + "</fieldset>"
+        + area(
+            "story",
+            "Your own story",
+            "what did you see, think or feel? Was anything surprising or funny? What should "
+            "the reader take away? The model uses this in the first person and cannot make "
+            "it up for you",
+            6,
+        )
         + area("points", "Key points", "one per line", 5)
         + area(
             "material",
@@ -179,6 +220,21 @@ def _summary(record: Mapping[str, Any]) -> str:
             + (f"; {brief['tone_note']}" if brief.get("tone_note") else ""),
         ),
         ("Length", LENGTH_LABEL.get(brief.get("length", ""), "")),
+        ("Mode", MODE_LABEL.get(brief.get("mode", "expand"), "")),
+        (
+            "Voice",
+            "; ".join(
+                part
+                for part in (
+                    brief.get("voice_address", ""),
+                    SENTENCE_LABEL.get(brief.get("voice_sentences", ""), ""),
+                    HUMOR_LABEL.get(brief.get("voice_humor", ""), ""),
+                    "has a voice sample" if brief.get("voice_sample") else "",
+                )
+                if part
+            ),
+        ),
+        ("Your story", f"{len(brief['story']):,} characters" if brief.get("story") else ""),
         ("Language", LANGUAGE_LABEL.get(brief.get("language", ""), "")),
         ("Key points", brief.get("points", "")),
         (
@@ -215,7 +271,7 @@ def _run_card(slug: str, run: PostRun | None, now: float) -> str:
     if run.slug != slug:
         return ""
     if run.running:
-        what = "outline" if run.kind == "outline" else "post"
+        what = {"outline": "outline", "voices": "three voices"}.get(run.kind, "post")
         shown = esc(run.partial) if run.partial else "Waiting for the first words..."
         return (
             '<section class="card runcard" aria-live="polite"><div class="runhead">'
@@ -275,6 +331,43 @@ def _outline_card(slug: str, record: Mapping[str, Any], models: Sequence[str], b
         'data-confirm="Replace this outline with a new one from the model? '
         'Changes you have not saved are lost.">'
         f"{picker}<button>Suggest a new outline</button></form></section>"
+    )
+
+
+def _voices_card(slug: str, record: Mapping[str, Any], models: Sequence[str], busy: bool) -> str:
+    if not models or busy:
+        return ""
+    base = f"/posts/{esc(slug)}"
+    found = record.get("voices")
+    voices = [v for v in found if isinstance(v, str)] if isinstance(found, list) else []
+    brief = record.get("brief")
+    sample = str(brief.get("voice_sample", "")) if isinstance(brief, dict) else ""
+    use = (
+        f'<details><summary>The voice sample in use</summary><p class="sample">{esc(sample)}</p>'
+        "</details>"
+        if sample
+        else ""
+    )
+    choose = ""
+    if voices:
+        options = "".join(
+            f'<label class="choice"><input type="radio" name="choice" value="{n}"'
+            f"{' required' if n == 0 else ''}><span>{esc(text)}</span></label>"
+            for n, text in enumerate(voices)
+        )
+        choose = (
+            f'<form method="post" action="{base}/voice">{options}'
+            '<div class="buttons"><button class="primary">Use this voice</button></div></form>'
+        )
+    picker = _model_select(models)
+    label = "Try three new voices" if voices else "Try three voices"
+    return (
+        '<section class="card"><h2>Find your voice</h2>'
+        '<p class="hint">Not sure how you sound? The model writes the opening of your post three '
+        "ways. Pick the one closest to you and the post follows it. About two minutes.</p>"
+        f"{choose}{use}"
+        f'<form class="runform" method="post" action="{base}/voices">{picker}'
+        f"<button>{label}</button></form></section>"
     )
 
 
@@ -347,6 +440,7 @@ def post_main(
         title
         + _run_card(slug, run, now)
         + _post_card(slug, record, models, busy)
+        + _voices_card(slug, record, models, busy)
         + _outline_card(slug, record, models, busy)
         + _summary(record)
     )

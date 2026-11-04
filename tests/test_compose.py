@@ -3,16 +3,20 @@ import pytest
 from nightshift.compose import (
     LIMITS,
     OUTLINE_TOKENS,
+    VOICES_TOKENS,
     BriefError,
     build_inputs,
     check_post,
     clean_output,
     ensure_frame,
+    ensure_points,
     flag_pairs,
     hide_terms,
     normalize_brief,
     parse_terms,
+    parse_voices,
     restore,
+    tidy_post,
     uncovered_points,
     unsupported_clauses,
     unsupported_spans,
@@ -99,7 +103,8 @@ def test_prompts_follow_the_brief():
     assert "Vietnamese" in outline.system and "Choose the sections yourself" in outline.system
     assert outline.num_predict == OUTLINE_TOKENS
     with_points = build_inputs(record(points="ý một\ný hai"), "outline")
-    assert "Build the structure from the key points" in with_points.system
+    assert "exactly one section for each" in with_points.system
+    assert "lists 2 key points" in with_points.system
     assert "Choose the sections yourself" not in with_points.system
     english = build_inputs(record(language="en"), "outline")
     assert "Opening" in english.system and "Closing" in english.system
@@ -244,7 +249,7 @@ def test_the_frame_says_nothing_about_the_material():
 
 
 def test_the_post_prompt_forbids_copying_repeating_and_unsupported_claims():
-    system = build_inputs(record(), "write").system
+    system = build_inputs(record(mode="close"), "write").system
     for phrase in (
         "never copy a sentence",
         "never repeat a point",
@@ -403,3 +408,148 @@ def test_the_post_check_names_the_key_points_the_post_dropped():
     texts = [i["text"] for i in check_post(post, inputs, 0, 0)]
     cover = next(t for t in texts if t.startswith("Key points the post does not seem to cover"))
     assert "600k" in cover and "Ban đầu chưa biết" in cover and "Thử ứng dụng" not in cover
+
+
+# --- mode, voice, story and outline points -----------------------------------------------------
+
+VOICES_TEXT = (
+    "Tôi từng nghĩ mình chỉ cần một công cụ hỏi đáp, cho đến khi gặp Claude trong công việc.\n"
+    "---\n"
+    "1. Buổi tối hôm đó tôi ngồi trước màn hình, gõ thử câu hỏi đầu tiên cho Claude Code.\n"
+    "---\n"
+    "**C)** Hóa ra tôi mất sáu trăm nghìn để biết mình đã bỏ lỡ cả một thế giới, haha vui thật.\n"
+)
+
+
+def test_mode_and_voice_have_defaults_and_are_validated():
+    b = normalize_brief({"topic": "x"})
+    assert (b["mode"], b["voice_sentences"], b["voice_humor"]) == ("expand", "mixed", "light")
+    assert b["story"] == "" and b["voice_sample"] == "" and b["voice_address"] == ""
+    for field in ("mode", "voice_sentences", "voice_humor"):
+        with pytest.raises(BriefError):
+            normalize_brief({"topic": "x", field: "nope"})
+    with pytest.raises(BriefError, match="voice sample"):
+        normalize_brief({"topic": "x", "voice_sample": "a" * (LIMITS["voice_sample"] + 1)})
+
+
+def test_expand_lets_the_model_reflect_and_close_keeps_the_prohibitions():
+    expand = build_inputs(record(mode="expand"), "write").system
+    close = build_inputs(record(mode="close"), "write").system
+    assert "Go beyond the notes" in expand and "state no benefit" not in expand
+    assert "Do not add new events, results, numbers, names or products" in expand
+    assert "state no benefit" in close and "Go beyond the notes" not in close
+
+
+def test_the_voice_rules_reach_the_write_prompt_and_only_there():
+    voice = {
+        "voice_address": "mình - các bạn",
+        "voice_sentences": "short",
+        "voice_humor": "playful",
+        "voice_avoid": "hành trình, không thể phủ nhận",
+    }
+    system = build_inputs(record(**voice), "write").system
+    assert "'mình - các bạn'" in system and "Prefer short sentences" in system
+    assert "Playful humor" in system and "hành trình, không thể phủ nhận" in system
+    assert "Voice:" not in build_inputs(record(**voice), "outline").system
+
+
+def test_the_story_counts_as_fact_but_the_voice_sample_does_not():
+    rec = record(story="Tối đó tôi đã hồi hộp.", voice_sample="Mẫu giọng riêng biệt.")
+    write = build_inputs(rec, "write")
+    assert "Tối đó tôi đã hồi hộp." in write.prompt and "Tối đó tôi đã hồi hộp." in write.source
+    assert "Mẫu giọng riêng biệt." in write.prompt and "Mẫu giọng riêng" not in write.source
+    assert "Never repeat its sentences" in write.prompt
+    assert "Mẫu giọng riêng biệt." not in build_inputs(rec, "outline").prompt
+
+
+def test_the_outline_asks_for_one_section_per_key_point_in_order():
+    inputs = build_inputs(record(points="- ý một\n2) ý hai\n\n* ý ba"), "outline")
+    assert "lists 3 key points" in inputs.system and "between them come 3 sections" in inputs.system
+    assert "1. ý một\n2. ý hai\n3. ý ba" in inputs.prompt
+
+
+def test_points_the_outline_still_leaves_out_are_added_before_the_closing():
+    points = "- ý một\n- bỏ ra 600k mua tài khoản"
+    outline = "- Mở bài: chào\n- Ý một: nói về ý một\n- Kết bài: tạm biệt"
+    fixed = ensure_points(outline, points, "vi")
+    assert fixed.splitlines() == [
+        "- Mở bài: chào",
+        "- Ý một: nói về ý một",
+        "- bỏ ra 600k mua tài khoản",
+        "- Kết bài: tạm biệt",
+    ]
+    assert ensure_points(fixed, points, "vi") == fixed
+    assert ensure_points("- Mở bài: chào", points, "vi").splitlines()[-1].startswith("- bỏ ra 600k")
+    assert ensure_points(outline, "", "vi") == outline
+
+
+def test_voices_are_split_on_their_dividers_and_stripped_of_numbering():
+    voices = parse_voices(VOICES_TEXT)
+    assert len(voices) == 3
+    assert voices[0].startswith("Tôi từng nghĩ") and voices[1].startswith("Buổi tối")
+    assert voices[2].startswith("Hóa ra")
+    assert parse_voices("quá ngắn\n---\nvẫn ngắn") == []
+    inline = "Đoạn thứ nhất có đủ tám từ để dùng. --- Đoạn thứ hai cũng có đủ tám từ nhé. --- "
+    inline += "Đoạn thứ ba thì viết thế này cho đủ."
+    assert len(parse_voices(inline)) == 3
+    assert len(parse_voices("\n---\n".join([VOICES_TEXT] * 3))) == 3
+
+
+def test_the_voices_prompt_asks_for_three_versions_and_trims_the_material():
+    inputs = build_inputs(record(material="x " * 3000, story="chuyện của tôi"), "voices")
+    assert inputs.num_predict == VOICES_TOKENS
+    assert "three times" in inputs.system and "line containing only ---" in inputs.system
+    assert "chuyện của tôi" in inputs.prompt and len(inputs.prompt) < 2500
+
+
+def test_expand_mode_flags_only_clauses_that_are_almost_all_new():
+    source = "alpha beta gamma delta epsilon"
+    half = "alpha beta unknownone unknowntwo."
+    assert flag_pairs(half, source) != [] and flag_pairs(half, source, True) == []
+    brand_new = "pretty unknownone unknowntwo unknownthree unknownfour."
+    assert flag_pairs(brand_new, source, True) != []
+    expand = check_post(half, build_inputs(record(mode="expand", material=source), "write"), 0, 0)
+    close = check_post(half, build_inputs(record(mode="close", material=source), "write"), 0, 0)
+    assert not any("may say more" in i["text"] for i in expand)
+    assert any("may say more" in i["text"] for i in close)
+
+
+def test_a_missing_point_goes_where_the_author_put_it_not_at_the_end():
+    points = "- chuyện đầu tiên\n- ý giữa\n- chuyện cuối cùng"
+    outline = "- Mở bài: chào\n- Ý giữa: nói về ý giữa\n- Kết bài: tạm biệt"
+    fixed = ensure_points(outline, points, "vi").splitlines()
+    assert fixed == [
+        "- Mở bài: chào",
+        "- chuyện đầu tiên",
+        "- Ý giữa: nói về ý giữa",
+        "- chuyện cuối cùng",
+        "- Kết bài: tạm biệt",
+    ]
+
+
+def test_headings_keep_only_the_label_and_the_frame_headings_go():
+    post = (
+        "# Tiêu đề\n\n## Mở bài: Tôi đã gặp Claude như thế nào\n\nĐoạn mở đầu có đủ sáu từ.\n\n"
+        "## Ứng dụng vào công việc: Tôi thử áp dụng nó vào công việc\n\nĐoạn giữa có đủ sáu từ.\n\n"
+        "## Kết bài: Tóm lại điều rút ra\n\nĐoạn cuối có đủ sáu từ.\n"
+    )
+    fixed, removed = tidy_post(post, "vi")
+    assert removed == 0
+    assert fixed.splitlines()[0] == "# Tiêu đề"
+    assert "## Ứng dụng vào công việc\n" in fixed
+    assert "Mở bài" not in fixed and "Kết bài" not in fixed
+    assert fixed.count("##") == 1 and "\n\n\n" not in fixed
+    assert tidy_post("## Closing: x\n\nMột đoạn văn có đủ sáu từ.", "en")[0].startswith("Một")
+
+
+def test_a_sentence_repeated_word_for_word_is_removed_but_code_and_short_ones_stay():
+    post = (
+        "Mình nghĩ chắc sẽ gỡ nhầm file. Nhưng nó hỏi lại mình. Ừ.\n\n"
+        "Mình nghĩ chắc sẽ gỡ nhầm file. Nhưng nó hỏi lại mình. Ừ.\n\n"
+        "```\nmình nghĩ chắc sẽ gỡ nhầm file.\n```\n"
+    )
+    fixed, removed = tidy_post(post, "vi")
+    assert removed == 2
+    assert fixed.count("Mình nghĩ chắc sẽ gỡ nhầm file.") == 1
+    assert fixed.count("Nhưng nó hỏi lại mình.") == 1 and fixed.count("Ừ.") == 2
+    assert "```\nmình nghĩ chắc sẽ gỡ nhầm file.\n```" in fixed

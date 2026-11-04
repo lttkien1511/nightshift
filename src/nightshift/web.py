@@ -14,7 +14,7 @@ from fastapi import FastAPI, Form, HTTPException, Request, Response
 from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse, RedirectResponse
 
 from . import __version__, ui, ui_posts
-from .compose import LIMITS, BriefError, normalize_brief
+from .compose import LIMITS, VOICE_FIELDS, BriefError, normalize_brief
 from .composer import Composer, Stream
 from .gate import Gate
 from .merge import MergeError, merge
@@ -296,7 +296,7 @@ def create_app(
 
     @app.get("/posts/new", response_class=HTMLResponse)
     def new_post_form() -> HTMLResponse:
-        return brief_page(None, "/posts")
+        return brief_page(store.blog_voice() or None, "/posts")
 
     @app.post("/posts")
     async def create_post(request: Request) -> Response:
@@ -305,6 +305,7 @@ def create_app(
         try:
             brief = normalize_brief(values)
             slug = store.create_post(brief["topic"], brief)
+            store.save_blog_voice({k: brief[k] for k in VOICE_FIELDS})
         except BriefError as exc:
             return brief_page(values, "/posts", str(exc), status=400)
         except QueueFull as exc:
@@ -342,12 +343,36 @@ def create_app(
                 values, f"/posts/{slug}/edit", str(exc), existing=True, post_active=slug, status=400
             )
         store.update_post(slug, brief=brief, title=brief["topic"])
+        store.save_blog_voice({k: brief[k] for k in VOICE_FIELDS})
         return RedirectResponse(f"/posts/{slug}", status_code=303)
 
     @app.post("/posts/{slug}/outline")
     def suggest_outline(slug: str, model: Annotated[str, Form()] = "") -> RedirectResponse:
         post_or_404(slug)
         start_job(slug, "outline", model)
+        return RedirectResponse(f"/posts/{slug}", status_code=303)
+
+    @app.post("/posts/{slug}/voices")
+    def try_voices(slug: str, model: Annotated[str, Form()] = "") -> RedirectResponse:
+        post_or_404(slug)
+        start_job(slug, "voices", model)
+        return RedirectResponse(f"/posts/{slug}", status_code=303)
+
+    @app.post("/posts/{slug}/voice")
+    def choose_voice(slug: str, choice: Annotated[int, Form()] = -1) -> RedirectResponse:
+        record = post_or_404(slug)
+        if writing_now(slug):
+            raise HTTPException(409, "the model is writing this post right now; cancel that first")
+        voices = record.get("voices")
+        if not isinstance(voices, list) or not 0 <= choice < len(voices):
+            raise HTTPException(400, "pick one of the voices")
+        picked = voices[choice]
+        brief = record.get("brief")
+        if not isinstance(picked, str) or not isinstance(brief, dict):
+            raise HTTPException(400, "pick one of the voices")
+        brief = {**brief, "voice_sample": picked[: LIMITS["voice_sample"]]}
+        store.update_post(slug, brief=brief)
+        store.save_blog_voice({k: str(brief.get(k, "")) for k in VOICE_FIELDS})
         return RedirectResponse(f"/posts/{slug}", status_code=303)
 
     @app.post("/posts/{slug}/outline/save")

@@ -300,3 +300,56 @@ def test_a_written_post_keeps_the_places_that_may_say_more_than_the_material(sto
     flagged = [record["post"][s:e] for s, e in record["flags"]]
     assert any("tiết kiệm thời gian" in part for part in flagged)
     assert not any("helm" in part for part in flagged)
+
+
+def test_an_outline_gets_back_the_key_points_the_model_dropped(store):
+    brief = normalize_brief({"topic": "Claude", "points": "điểm một\nbỏ ra 600k mua tài khoản"})
+    slug = store.create_post("Claude", brief)
+    composer = composer_with(store, fake_stream(["- Mở bài: chào\n- Điểm một: a\n- Kết bài: b"]))
+    composer.start(slug, "outline")
+    composer.wait()
+    lines = store.post(slug)["outline"].splitlines()
+    assert lines[-2] == "- bỏ ra 600k mua tài khoản" and lines[-1].startswith("- Kết bài")
+
+
+def test_three_voices_are_stored_without_touching_the_stage(store, slug):
+    text = (
+        "Tôi từng nghĩ mình chỉ cần một công cụ hỏi đáp thôi.\n---\n"
+        "Buổi tối hôm đó tôi ngồi trước màn hình và gõ thử.\n---\n"
+        "Hóa ra tôi mất sáu trăm nghìn để biết mình bỏ lỡ nhiều."
+    )
+    composer = composer_with(store, fake_stream([text]))
+    composer.start(slug, "voices")
+    composer.wait()
+    record = store.post(slug)
+    assert len(record["voices"]) == 3 and record["stage"] == "brief" and record["post"] == ""
+    assert composer.state.state == "done"
+
+
+def test_a_model_that_writes_no_usable_voices_fails_the_job(store, slug):
+    composer = composer_with(store, fake_stream(["ngắn quá"]))
+    composer.start(slug, "voices")
+    composer.wait()
+    assert composer.state.state == "failed" and "usable samples" in composer.state.error
+    assert "voices" not in store.post(slug)
+
+
+def test_the_last_blog_voice_is_remembered_and_unreadable_files_are_ignored(store):
+    assert store.blog_voice() == {}
+    store.save_blog_voice({"voice_address": "mình - các bạn", "mode": "close"})
+    assert store.blog_voice()["voice_address"] == "mình - các bạn"
+    store.blog_voice_path.write_text("not json", encoding="utf-8")
+    assert store.blog_voice() == {}
+
+
+def test_the_written_post_loses_copied_headings_and_repeated_sentences(store, slug):
+    text = (
+        "# Tiêu đề\n\n## Mở bài: chào bạn\n\nMình nghĩ chắc sẽ gỡ nhầm file thôi. "
+        "Mình nghĩ chắc sẽ gỡ nhầm file thôi.\n"
+    )
+    composer = composer_with(store, fake_stream([text]))
+    composer.start(slug, "write")
+    composer.wait()
+    record = store.post(slug)
+    assert "Mở bài" not in record["post"] and record["post"].count("gỡ nhầm") == 1
+    assert any("1 repeated sentence" in c["text"] for c in record["checks"])

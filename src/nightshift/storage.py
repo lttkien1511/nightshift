@@ -128,6 +128,20 @@ class Store:
                 )
         return found
 
+    @property
+    def blog_voice_path(self) -> Path:
+        return self.root / "blog-voice.json"
+
+    def blog_voice(self) -> dict[str, str]:
+        """The voice used for the last blog post, to start the next one from."""
+        saved = _load_json(self.blog_voice_path) or {}
+        return {k: v for k, v in saved.items() if isinstance(v, str)}
+
+    def save_blog_voice(self, voice: dict[str, str]) -> None:
+        tmp = self.blog_voice_path.with_name(".blog-voice.tmp")
+        tmp.write_text(json.dumps(voice, ensure_ascii=False, indent=1), encoding="utf-8")
+        tmp.replace(self.blog_voice_path)
+
     def _write_post(self, slug: str, record: dict[str, object]) -> None:
         path = self.posts_dir / f"{slug}.json"
         tmp = path.with_name(f".{path.name}.tmp")

@@ -20,7 +20,30 @@ TODO_MARKER = {"vi": "[cần bổ sung: ...]", "en": "[TODO: ...]"}
 HIDDEN_LABEL = {"vi": "[đã ẩn]", "en": "[hidden]"}
 # length -> (target words, token cap for the answer)
 LENGTHS = {"short": (300, 900), "medium": (600, 1800)}
+# how far the post may go beyond the notes: stay close to them, or explain and reflect around them
+MODES = ("close", "expand")
+SENTENCES = ("short", "mixed", "long")
+HUMOR = ("none", "light", "playful")
+# the fields that make up the author's voice; they are remembered for the next blog post
+VOICE_FIELDS = (
+    "tone",
+    "mode",
+    "tone_note",
+    "voice_address",
+    "voice_sentences",
+    "voice_humor",
+    "voice_avoid",
+    "voice_sample",
+)
+# three voices tried on the opening paragraph so the author can pick the one that sounds like them
+VOICE_STYLES = (
+    "confiding: like talking to a close friend, warm and a little vulnerable",
+    "storytelling: one small moment told as a scene, with concrete details from the story",
+    "light humor: playful and self-deprecating, with a short joke or casual aside",
+)
 OUTLINE_TOKENS = 600
+VOICES_TOKENS = 700
+TOKENS = {"outline": OUTLINE_TOKENS, "voices": VOICES_TOKENS}
 OUTLINE_PARTS = {"vi": ("Mở bài", "Kết bài"), "en": ("Opening", "Closing")}
 
 LIMITS = {
@@ -28,6 +51,10 @@ LIMITS = {
     "audience": 200,
     "tone_note": 300,
     "points": 3000,
+    "story": 3000,
+    "voice_address": 40,
+    "voice_avoid": 300,
+    "voice_sample": 1500,
     "material": 12000,
     "avoid": 2000,
     "outline": 3000,
@@ -37,6 +64,7 @@ MAX_TERM = 80
 
 HIDE_RE = re.compile(r"\[\[HIDE_\d+\]\]")
 _NUMBER = re.compile(r"\d+(?:[.,]\d+)*")
+_BULLET = re.compile(r"^\s*(?:[-*\u2022]|\d+[.)])\s*")
 _TODO = re.compile(r"\[(?:cần bổ sung|TODO)[^\]]*\]", re.IGNORECASE)
 _IPV4 = re.compile(r"(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?![\d.])")
 _EMAIL = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
@@ -64,6 +92,13 @@ def normalize_brief(form: Mapping[str, str]) -> dict[str, str]:
         "points": field("points"),
         "material": field("material"),
         "avoid": field("avoid"),
+        "story": field("story"),
+        "mode": field("mode") or "expand",
+        "voice_address": field("voice_address"),
+        "voice_sentences": field("voice_sentences") or "mixed",
+        "voice_humor": field("voice_humor") or "light",
+        "voice_avoid": field("voice_avoid"),
+        "voice_sample": field("voice_sample"),
     }
     if not brief["topic"]:
         raise BriefError("say what the post is about")
@@ -73,6 +108,9 @@ def normalize_brief(form: Mapping[str, str]) -> dict[str, str]:
         raise BriefError("unknown length")
     if brief["language"] not in LANGUAGES:
         raise BriefError("unknown language")
+    for name, allowed in (("mode", MODES), ("voice_sentences", SENTENCES), ("voice_humor", HUMOR)):
+        if brief[name] not in allowed:
+            raise BriefError(f"unknown {name.replace('_', ' ')}")
     for name, limit in LIMITS.items():
         if len(brief.get(name, "")) > limit:
             raise BriefError(f"{name.replace('_', ' ')} is longer than {limit:,} characters")
@@ -122,6 +160,39 @@ class Inputs:
     target_words: int
     points: str
     source: str  # everything the model was given, for the fact check
+    mode: str = "expand"
+
+
+def point_lines(points: str) -> list[str]:
+    """The key points one per line, without list markers or blank lines."""
+    lines = (_BULLET.sub("", raw).strip() for raw in points.splitlines())
+    return [line for line in lines if line]
+
+
+def _voice_rules(brief: Mapping[str, str]) -> str:
+    rules = []
+    address = brief.get("voice_address", "").strip()
+    if address:
+        rules.append(
+            f"The author and the reader are addressed as '{address}': use exactly these words "
+            "for 'I' and 'you'."
+        )
+    rules.append(
+        {"short": "Prefer short sentences.", "long": "Use fuller, flowing sentences."}.get(
+            brief.get("voice_sentences", "mixed"), "Mix short and longer sentences."
+        )
+    )
+    rules.append(
+        {
+            "none": "No jokes.",
+            "light": "A little gentle humor is welcome.",
+            "playful": "Playful humor and casual asides are welcome, in moderation.",
+        }.get(brief.get("voice_humor", "light"), "")
+    )
+    avoid = brief.get("voice_avoid", "").strip()
+    if avoid:
+        rules.append(f"Never use these phrases or anything like them: {avoid}.")
+    return " ".join(rule for rule in rules if rule)
 
 
 def _system(kind: str, brief: Mapping[str, str]) -> str:
@@ -132,39 +203,68 @@ def _system(kind: str, brief: Mapping[str, str]) -> str:
         "for content you must not see. Copy each one exactly where it belongs, never explain or "
         "guess what is behind it, and never invent new ones. "
     )
+    if kind == "voices":
+        styles = "; ".join(f"{n}) {style}" for n, style in enumerate(VOICE_STYLES, 1))
+        return (
+            "You help an author find their voice for a personal blog. Write the opening "
+            "paragraph of the post (60 to 90 words) three times, each in a different voice: "
+            f"{styles}. Use only facts from the brief, the story and the material; do not add "
+            "events, numbers or names. Write the three versions one after another and put a "
+            "line containing only --- between them. No numbering, no titles, no commentary. "
+            f"{protected}Write in {language}."
+        )
     if kind == "outline":
         opening, closing = OUTLINE_PARTS[brief["language"]]
-        if brief.get("points", "").strip():
+        count = len(point_lines(brief.get("points", "")))
+        if count:
             source = (
-                "Build the structure from the key points: turn each one into a section, and you "
-                "may merge, split or reorder them so the story flows naturally. "
+                f"The brief lists {count} key points. Write exactly one section for each, in "
+                "the same order: never merge, drop or reorder them. You may rephrase a heading, "
+                "but it must keep the meaning of its point. "
             )
+            between = f"between them come {count} sections"
         else:
             source = "Choose the sections yourself from the material. "
+            between = "between them come 3 to 6 sections"
         return (
             "You help plan a short blog post for a personal portfolio blog. "
             "Reply with the structure of the post as a list, one item per line, each starting "
             "with '- ' and written as 'Heading: one line on what this part says'. "
             f"The first item is '{opening}' (how the post begins) and the last is '{closing}' "
-            f"(how it ends); between them come 3 to 6 sections. {source}"
+            f"(how it ends); {between}. {source}"
             "Use only what the brief and the material say; do not add facts. "
             f"{protected}Write in {language}. No title, no introduction, no commentary."
         )
     marker = TODO_MARKER[brief["language"]]
+    if brief.get("mode", "expand") == "close":
+        stance = (
+            f"When the post needs something the material does not give, write {marker} instead "
+            "of making it up, and state no benefit, result, opinion or general claim that the "
+            "material does not state. Rewrite everything in your own words and fix awkward "
+            "phrasing: never copy a sentence from the material. "
+        )
+    else:
+        stance = (
+            "Go beyond the notes in how you write: explain why each point matters, connect the "
+            "ideas with natural transitions, ask the reader a question now and then, and add "
+            "short reflections in the author's voice. Describe feelings and scenes only from "
+            "what the story says. Do not add new events, results, numbers, names or products. "
+            f"When a personal detail is missing, write {marker} instead of making it up. "
+            "Rewrite everything in your own words and never copy a sentence from the material. "
+        )
     return (
         "You are a careful ghostwriter for a personal technical blog on a portfolio website. "
         "Write one blog post from the brief and the material. "
         "If an outline is given, follow its order and cover every part; its first and last "
         "items say how to open and how to close. "
-        "Use ONLY facts, names, numbers, places, dates and commands that appear in the material. "
-        "Never invent them and never write quotations. "
-        f"When the post needs something the material does not give, write {marker} instead of "
-        "making it up, and state no benefit, result, opinion or general claim that the material "
-        "does not state. Rewrite everything in your own words and fix awkward phrasing: never "
-        "copy a sentence from the material. Cover each part of the outline once, in order, so the "
+        "Use ONLY facts, names, numbers, places, dates and commands that appear in the material "
+        "or the personal story. Never invent them and never write quotations. "
+        f"{stance}"
+        "Cover each part of the outline once, in order, so the "
         "story runs naturally, and never repeat a point in two sections. "
         f"Write for the audience named in the brief. {protected}"
         f"Write in {language}, in a tone that is {TONES[brief['tone']]}. "
+        f"Voice: {_voice_rules(brief)} "
         "Reply with Markdown only: start with a single '# ' title line, then paragraphs, with "
         "'## ' headings only if they help. No front matter, no commentary before or after."
     )
@@ -183,12 +283,28 @@ def build_inputs(record: Mapping[str, object], kind: str) -> Inputs:
     if kind == "write":
         parts.append(f"Length: about {words} words")
     if brief.get("points"):
-        parts.append(f"Key points to cover:\n{brief['points']}")
+        if kind == "outline":
+            numbered = "\n".join(f"{n}. {p}" for n, p in enumerate(point_lines(brief["points"]), 1))
+            parts.append(f"Key points (one section each, in this order):\n{numbered}")
+        else:
+            parts.append(f"Key points to cover:\n{brief['points']}")
     outline = str(record.get("outline", "")).strip()
     if kind == "write" and outline:
         parts.append(f"Outline to follow:\n{outline}")
+    if brief.get("story"):
+        parts.append(
+            "The author's own story and feelings (may be used in the first person):\n"
+            + brief["story"]
+        )
+    if kind == "write" and brief.get("voice_sample"):
+        parts.append(
+            "Voice sample (use it only for rhythm, warmth and way of speaking. Never repeat "
+            "its sentences or events; the facts come from the material and the story only):\n"
+            f"{brief['voice_sample']}"
+        )
     if brief.get("material"):
-        parts.append(f"Material (the only source of facts):\n{brief['material']}")
+        material = brief["material"][:1500] if kind == "voices" else brief["material"]
+        parts.append(f"Material (the only source of facts):\n{material}")
     source = "\n\n".join(parts)
     # What the checks treat as known: only what the person wrote. The outline is the model's
     # own work, so a claim it invented there must not make the same claim in the post look fine.
@@ -199,6 +315,7 @@ def build_inputs(record: Mapping[str, object], kind: str) -> Inputs:
             brief.get("audience", ""),
             brief.get("tone_note", ""),
             brief.get("points", ""),
+            brief.get("story", ""),
             brief.get("material", ""),
         )
         if text
@@ -211,13 +328,14 @@ def build_inputs(record: Mapping[str, object], kind: str) -> Inputs:
     return Inputs(
         system=_system(kind, brief),
         prompt=masked.text,
-        num_predict=OUTLINE_TOKENS if kind == "outline" else LENGTHS[brief["length"]][1],
+        num_predict=TOKENS.get(kind) or LENGTHS[brief["length"]][1],
         originals=masked.originals,
         terms=terms,
         language=brief["language"],
         target_words=words,
         points=brief.get("points", ""),
         source=facts,
+        mode=brief.get("mode", "expand"),
     )
 
 
@@ -298,6 +416,111 @@ def ensure_frame(outline: str, language: str) -> str:
     if label(lines[-1]) != closing_label.lower():
         lines.append(f"- {closing}")
     return "\n".join(lines)
+
+
+_HEADING = re.compile(r"^(#{2,6})\s+(.+?)\s*$")
+_SENTENCE_END = re.compile(r"(?<=[.!?])\s+")
+
+
+def tidy_post(text: str, language: str) -> tuple[str, int]:
+    """Fix what a small model does to a post, and say how many sentences were dropped.
+
+    It copies outline lines in as headings, so a heading keeps only what is before the colon
+    and the headings for the opening and the closing go. It also repeats itself, so a sentence
+    of five words or more that already appeared word for word is removed.
+    """
+    skip = {label.lower() for label in OUTLINE_PARTS[language]}
+    seen: set[str] = set()
+    removed = 0
+    out: list[str] = []
+    in_fence = False
+    for line in text.split("\n"):
+        if line.lstrip().startswith("```"):
+            in_fence = not in_fence
+            out.append(line)
+            continue
+        found = None if in_fence else _HEADING.match(line)
+        if found:
+            label, _, _rest = found.group(2).partition(":")
+            if label.strip().lower() in skip:
+                continue
+            out.append(f"{found.group(1)} {label.strip()}")
+            continue
+        if in_fence or line.lstrip().startswith("#") or not line.strip():
+            out.append(line)
+            continue
+        kept = []
+        for sentence in _SENTENCE_END.split(line.strip()):
+            key = " ".join(w.lower() for w in _WORDS.findall(sentence))
+            if len(key.split()) >= 5:
+                if key in seen:
+                    removed += 1
+                    continue
+                seen.add(key)
+            kept.append(sentence)
+        if kept:
+            out.append(" ".join(kept))
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(out)).strip(), removed
+
+
+def parse_voices(text: str) -> list[str]:
+    """The sample paragraphs the model wrote, split on its ``---`` dividers. At most three.
+
+    The divider is found even when the model writes it at the end of a line.
+    """
+    pieces = re.split(r"(?:^|\s)(?:-{3,}|\*{3,}|_{3,})(?:\s|$)", text)
+    cleaned = []
+    for piece in pieces:
+        body = re.sub(
+            r"^(?:#+\s*)?(?:\*\*)?\s*(?:\d+|[A-Ca-c])[.):]\s*(?:\*\*)?\s*", "", piece.strip()
+        )
+        if len(body.split()) >= 8:
+            cleaned.append(body.strip())
+    return cleaned[:3]
+
+
+def _best_line(point: str, lines: list[str], first: int, last: int) -> int:
+    """The index in ``lines[first:last]`` that shares the most words with ``point``."""
+    wanted = {w.lower() for w in _WORDS.findall(point) if w.lower() not in STOPWORDS}
+    best, score = first, -1
+    for index in range(first, last):
+        shared = len(wanted & {w.lower() for w in _WORDS.findall(lines[index])})
+        if shared > score:
+            best, score = index, shared
+    return best
+
+
+def ensure_points(outline: str, points: str, language: str) -> str:
+    """Add a line for every key point the outline left out, in the order the author wrote them.
+
+    The model is told to give each point its own section but a small one still drops some, so
+    the code puts them back in the author's own words, each after the section of the point
+    that precedes it, where they can be edited like the rest.
+    """
+    missing = set(uncovered_points(points, outline))
+    if not missing:
+        return outline
+    opening_label, closing_label = (label.lower() for label in OUTLINE_PARTS[language])
+    lines = [line for line in outline.splitlines() if line.strip()]
+
+    def label(line: str) -> str:
+        found = _FRAME_ITEM.match(line)
+        return found.group("label").strip().lower() if found else ""
+
+    first = 1 if lines and label(lines[0]) == opening_label else 0
+    stop = len(lines) - 1 if lines and label(lines[-1]) == closing_label else len(lines)
+    after: dict[int, list[str]] = {}
+    anchor = first - 1
+    for point in point_lines(points):
+        if point in missing:
+            after.setdefault(anchor, []).append(f"- {point}")
+        elif first < stop:
+            anchor = max(anchor, _best_line(point, lines, first, stop))
+    result = list(after.get(-1, []))
+    for index, line in enumerate(lines):
+        result.append(line)
+        result.extend(after.get(index, []))
+    return "\n".join(result)
 
 
 _WORDS = re.compile(r"\w+")
@@ -406,7 +629,13 @@ STOPWORDS = frozenset(
 )
 
 
-def unsupported_spans(post: str, source: str) -> list[tuple[int, int, float]]:
+# In expand mode new wording is wanted, so only clauses that are almost all new get flagged
+LOOSE = (3, 0.7)
+
+
+def unsupported_spans(
+    post: str, source: str, min_missing: int = 2, min_ratio: float = 0.4
+) -> list[tuple[int, int, float]]:
     """Where the post has clauses made mostly of words the material never uses.
 
     Returns ``(start, end, share of unknown words)`` positions in ``post``, in reading order.
@@ -431,7 +660,7 @@ def unsupported_spans(post: str, source: str) -> list[tuple[int, int, float]]:
                     continue
                 missing = [w for w in content if w not in known]
                 ratio = len(missing) / len(content)
-                if len(missing) >= 2 and ratio >= 0.4:
+                if len(missing) >= min_missing and ratio >= min_ratio:
                     start = offset + clause.start() + (len(raw) - len(raw.lstrip()))
                     end = offset + clause.start() + len(raw.rstrip())
                     found.append((start, end, ratio))
@@ -439,18 +668,20 @@ def unsupported_spans(post: str, source: str) -> list[tuple[int, int, float]]:
     return found
 
 
-def unsupported_clauses(post: str, source: str, limit: int = 4) -> list[str]:
+def unsupported_clauses(post: str, source: str, limit: int = 4, relaxed: bool = False) -> list[str]:
     """The worst of those clauses as text, most suspicious first."""
-    worst = sorted(unsupported_spans(post, source), key=lambda span: span[2], reverse=True)
+    worst = sorted(
+        unsupported_spans(post, source, *LOOSE if relaxed else ()),
+        key=lambda span: span[2],
+        reverse=True,
+    )
     return [post[start:end] for start, end, _ in worst[:limit]]
 
 
-def flag_pairs(post: str, source: str) -> list[list[int]]:
+def flag_pairs(post: str, source: str, relaxed: bool = False) -> list[list[int]]:
     """The spans in a form that can be stored next to the post."""
-    return [[start, end] for start, end, _ in unsupported_spans(post, source)]
-
-
-_BULLET = re.compile(r"^\s*(?:[-*\u2022]|\d+[.)])\s*")
+    spans = unsupported_spans(post, source, *LOOSE if relaxed else ())
+    return [[start, end] for start, end, _ in spans]
 
 
 def uncovered_points(points: str, text: str, threshold: float = 0.5) -> list[str]:
@@ -512,9 +743,10 @@ def check_post(post: str, inputs: Inputs, redacted: int, invented: int) -> list[
         )
     if invented:
         found.append({"level": "info", "text": f"Removed {invented} token(s) the model made up."})
-    spans = unsupported_spans(post, inputs.source)
+    relaxed = inputs.mode == "expand"
+    spans = unsupported_spans(post, inputs.source, *LOOSE if relaxed else ())
     if spans:
-        worst = unsupported_clauses(post, inputs.source, limit=3)
+        worst = unsupported_clauses(post, inputs.source, limit=3, relaxed=relaxed)
         more = len(spans) - len(worst)
         shown = "; ".join(f"\u201c{clause[:90]}\u201d" for clause in worst)
         if more > 0:

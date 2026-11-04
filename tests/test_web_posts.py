@@ -3,7 +3,7 @@ import threading
 import pytest
 from fastapi.testclient import TestClient
 
-from nightshift.compose import OUTLINE_TOKENS, ensure_frame
+from nightshift.compose import OUTLINE_TOKENS, VOICES_TOKENS, ensure_frame
 from nightshift.composer import Composer
 from nightshift.gate import Gate
 from nightshift.runner import Runner
@@ -21,6 +21,11 @@ FORM = {
     "avoid": "EVN",
 }
 OUTLINE = "- Vì sao gỡ\n- Cách gỡ\n- Kết quả"
+VOICES = (
+    "Một đoạn mở bài theo giọng tâm sự với bạn thân.\n---\n"
+    "Buổi tối hôm đó tôi ngồi một mình trước màn hình máy tính.\n---\n"
+    "Hóa ra mọi chuyện buồn cười hơn tôi tưởng rất nhiều."
+)
 POST = "# Gỡ Rancher\n\nTôi gặp [[HIDE_1]]. Chạy [[CODE_1]] rồi xem, giảm 450 MB."
 
 
@@ -34,7 +39,7 @@ class Script:
 
     def __call__(self, system, prompt, num_predict, on_text):
         self.prompts.append(prompt)
-        text = OUTLINE if num_predict == OUTLINE_TOKENS else POST
+        text = {OUTLINE_TOKENS: OUTLINE, VOICES_TOKENS: VOICES}.get(num_predict, POST)
         out = []
         for index, piece in enumerate([text[: len(text) // 2], text[len(text) // 2 :]]):
             if index == 1:
@@ -390,3 +395,67 @@ def test_the_post_lists_the_key_points_it_dropped_among_its_checks(client, compo
     page = client.get(f"/posts/{slug}").text
     assert "Key points the post does not seem to cover" in page
     assert "tính năng mới" in page and "kết quả đo được" in page
+
+
+# --- voice, mode and story -----------------------------------------------------------------------
+
+
+def test_the_form_has_the_voice_card_and_the_story_and_defaults_to_expand(client):
+    page = client.get("/posts/new").text
+    for name in (
+        "mode",
+        "voice_address",
+        "voice_sentences",
+        "voice_humor",
+        "voice_avoid",
+        "voice_sample",
+        "story",
+    ):
+        assert f'name="{name}"' in page
+    assert '<option value="expand" selected>' in page and "Your voice" in page
+
+
+def test_the_voice_is_remembered_for_the_next_blog_post(client):
+    create(client, voice_address="mình - các bạn", voice_humor="playful", mode="close")
+    page = client.get("/posts/new").text
+    assert 'value="mình - các bạn"' in page
+    assert '<option value="playful" selected>' in page and '<option value="close" selected>' in page
+
+
+def test_the_story_reaches_the_model(client, composer, script):
+    create(client, action="write", story="Tối đó tôi hồi hộp lắm.")
+    composer.wait()
+    assert "Tối đó tôi hồi hộp lắm." in script.prompts[-1]
+
+
+def test_three_voices_can_be_tried_and_one_becomes_the_voice_sample(client, store, composer):
+    slug = slug_of(create(client))
+    assert "Try three voices" in client.get(f"/posts/{slug}").text
+    client.post(f"/posts/{slug}/voices", data={}, follow_redirects=False)
+    composer.wait()
+    page = client.get(f"/posts/{slug}").text
+    assert page.count('name="choice"') == 3 and "Use this voice" in page
+    assert "Try three new voices" in page
+    picked = client.post(f"/posts/{slug}/voice", data={"choice": "1"}, follow_redirects=False)
+    assert picked.status_code == 303
+    sample = store.post(slug)["brief"]["voice_sample"]
+    assert sample.startswith("Buổi tối") and store.blog_voice()["voice_sample"] == sample
+    assert "The voice sample in use" in client.get(f"/posts/{slug}").text
+
+
+def test_picking_a_voice_that_does_not_exist_is_refused(client, store):
+    slug = slug_of(create(client))
+    assert client.post(f"/posts/{slug}/voice", data={"choice": "0"}).status_code == 400
+    store.update_post(slug, voices=["một đoạn", 5])
+    assert client.post(f"/posts/{slug}/voice", data={"choice": "1"}).status_code == 400
+    assert client.post(f"/posts/{slug}/voice", data={"choice": "9"}).status_code == 400
+    assert client.post("/posts/nope/voices").status_code == 404
+
+
+def test_editing_the_brief_keeps_the_voice_fields(client, store):
+    slug = slug_of(create(client, voice_address="tớ - cậu"))
+    page = client.get(f"/posts/{slug}/edit").text
+    assert 'value="tớ - cậu"' in page
+    client.post(f"/posts/{slug}/edit", data={**FORM, "voice_address": "mình - bạn"})
+    assert store.post(slug)["brief"]["voice_address"] == "mình - bạn"
+    assert store.blog_voice()["voice_address"] == "mình - bạn"

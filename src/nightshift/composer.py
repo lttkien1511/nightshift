@@ -18,9 +18,12 @@ from .compose import (
     check_post,
     clean_output,
     ensure_frame,
+    ensure_points,
     flag_pairs,
+    parse_voices,
     preview,
     restore,
+    tidy_post,
 )
 from .gate import Gate
 from .runner import Busy, RunnerError
@@ -34,7 +37,7 @@ PARTIAL_KEEP = 4000
 @dataclass(frozen=True)
 class PostRun:
     slug: str
-    kind: str  # outline or write
+    kind: str  # outline, write or voices
     model: str
     state: str  # running, done, cancelled or failed
     started: float
@@ -75,7 +78,7 @@ class Composer:
             return self._state
 
     def start(self, slug: str, kind: str, model: str = "") -> PostRun:
-        if kind not in {"outline", "write"}:
+        if kind not in {"outline", "write", "voices"}:
             raise RunnerError("unknown step")
         model = model or (self.models[0] if self.models else "")
         if model not in self.models:
@@ -139,13 +142,27 @@ class Composer:
                 raise RunnerError("the model wrote nothing")
             fields: dict[str, object] = {"model": model, "error": ""}
             if kind == "outline":
-                fields.update(outline=ensure_frame(text, inputs.language), stage="outline")
+                outline = ensure_points(
+                    ensure_frame(text, inputs.language), inputs.points, inputs.language
+                )
+                fields.update(outline=outline, stage="outline")
+            elif kind == "voices":
+                voices = parse_voices(text)
+                if not voices:
+                    raise RunnerError("the model did not write usable samples; try again")
+                fields.update(voices=voices)
             else:
+                text, repeated = tidy_post(text, inputs.language)
+                checks = check_post(text, inputs, redacted, invented)
+                if repeated:
+                    checks.append(
+                        {"level": "info", "text": f"Removed {repeated} repeated sentence(s)."}
+                    )
                 fields.update(
                     post=text,
                     stage="done",
-                    checks=check_post(text, inputs, redacted, invented),
-                    flags=flag_pairs(text, inputs.source),
+                    checks=checks,
+                    flags=flag_pairs(text, inputs.source, inputs.mode == "expand"),
                 )
             self.store.update_post(slug, **fields)
         except Exception as exc:
