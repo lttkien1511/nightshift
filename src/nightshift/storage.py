@@ -138,8 +138,10 @@ class Store:
         return {k: v for k, v in saved.items() if isinstance(v, str)}
 
     def save_blog_voice(self, voice: dict[str, str]) -> None:
+        """Remember these settings; what was saved before and is not mentioned stays."""
+        merged = {**self.blog_voice(), **voice}
         tmp = self.blog_voice_path.with_name(".blog-voice.tmp")
-        tmp.write_text(json.dumps(voice, ensure_ascii=False, indent=1), encoding="utf-8")
+        tmp.write_text(json.dumps(merged, ensure_ascii=False, indent=1), encoding="utf-8")
         tmp.replace(self.blog_voice_path)
 
     def _write_post(self, slug: str, record: dict[str, object]) -> None:

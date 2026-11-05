@@ -103,6 +103,17 @@ class OllamaEditor:
         return generate(self.cfg, self._system, block)
 
 
+def list_models(url: str, timeout: float = 3.0) -> list[str]:
+    """The models Ollama has downloaded, or nothing when it cannot be asked."""
+    try:
+        with urllib.request.urlopen(url.rstrip("/") + "/api/tags", timeout=timeout) as response:  # noqa: S310
+            found = json.load(response).get("models", [])
+    except (urllib.error.URLError, TimeoutError, OSError, ValueError, AttributeError):
+        return []
+    names = [m.get("name") for m in found if isinstance(m, dict)]
+    return sorted(n for n in names if isinstance(n, str) and n and "embed" not in n)
+
+
 def generate_stream(
     cfg: OllamaConfig,
     system: str,
@@ -110,6 +121,7 @@ def generate_stream(
     on_text: Callable[[str], object],
     num_predict: int = 1200,
     num_ctx: int | None = None,
+    think: bool | None = None,
 ) -> str:
     """Like ``generate`` but the text arrives piece by piece.
 
@@ -129,6 +141,8 @@ def generate_stream(
             "num_predict": num_predict,
         },
     }
+    if think is not None:
+        payload["think"] = think
     request = urllib.request.Request(
         cfg.url.rstrip("/") + "/api/generate",
         data=json.dumps(payload).encode(),

@@ -181,4 +181,21 @@ mark.odd{background:var(--soft);color:inherit;border-radius:3px;padding:0 .1em;b
 .runform + .runform{margin-top:.6rem}
 .choice,.choice span{font-weight:400}
 form + .runform{margin-top:.8rem}
-
+.picks{border:1px solid var(--line);border-radius:8px;padding:.4rem .8rem .5rem;margin:.6rem 0}
+.picks legend{font-size:.85rem;color:var(--muted);padding:0 .3rem}
+.picks .hint{display:block}
+.card label.pick{display:inline-flex;gap:.4rem;align-items:center;font-weight:400;margin:0 1rem .25rem 0}
+.cands{margin-top:1.2rem;border-top:1px solid var(--line);padding-top:.8rem}
+.cands h3{font-size:.95rem;margin:0 0 .2rem}
+.cands details{border:1px solid var(--line);border-radius:8px;padding:.5rem .8rem;margin:.6rem 0}
+.cands summary{cursor:pointer;font-weight:600}
+.card label.piece{display:flex;gap:.6rem;align-items:flex-start;font-weight:400;font-size:.92rem;margin:.3rem 0;padding:.35rem .5rem;border-radius:6px;cursor:pointer}
+.piece:hover{background:var(--bg)}
+.piece input{margin-top:.3rem}
+.piece.added{opacity:.55}
+.piece.odd span:first-of-type{background:rgba(255,196,0,.3)}
+.piece .tag{color:var(--muted);font-size:.78rem;white-space:nowrap;margin-left:auto}
+.grain{white-space:nowrap}
+details.edit{margin:.8rem 0}
+details.edit summary{cursor:pointer;font-weight:600}
+details.edit textarea{margin-top:.6rem}

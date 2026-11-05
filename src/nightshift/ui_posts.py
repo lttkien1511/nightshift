@@ -6,7 +6,7 @@ import html
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from .compose import LENGTHS, LIMITS, TONES, uncovered_points
+from .compose import LENGTHS, LIMITS, POST_LIMIT, TONES, pieces, uncovered_points
 from .composer import PostRun
 from .storage import PostItem
 
@@ -100,12 +100,35 @@ def _model_select(models: Sequence[str]) -> str:
     return f'<label class="inline">Model<select name="model">{options}</select></label>'
 
 
+def _boxes(models: Sequence[str], chosen: Sequence[str], name: str) -> str:
+    ticked = [m for m in chosen if m in models] or list(models[:1])
+    return "".join(
+        f'<label class="pick"><input type="checkbox" name="{esc(name)}" value="{esc(m)}"'
+        f"{' checked' if m in ticked else ''}> {esc(m)}</label>"
+        for m in models
+    )
+
+
+def _model_picks(models: Sequence[str], chosen: Sequence[str]) -> str:
+    """Tick the models that take this step. With one model there is nothing to choose."""
+    if len(models) < 2:
+        return ""
+    return (
+        '<fieldset class="picks"><legend>Models</legend>'
+        f"{_boxes(models, chosen, 'models')}"
+        '<span class="hint">Tick several to compare them. They run one after another.</span>'
+        "</fieldset>"
+    )
+
+
 def brief_form(
     values: Mapping[str, str] | None,
     action: str,
     can_write: bool,
     error: str = "",
     existing: bool = False,
+    models: Sequence[str] = (),
+    picks: Mapping[str, Sequence[str]] | None = None,
 ) -> str:
     """The brief: what the post is about, for whom, in what voice, and what must stay out."""
     v = {
@@ -146,6 +169,18 @@ def brief_form(
         )
     else:
         buttons = '<button class="primary" name="action" value="save">Save the brief</button>'
+    chosen = picks or {}
+    chooser = (
+        '<fieldset class="voice"><legend>Models</legend>'
+        '<p class="hint">Tick the models that take part. With several, they run one after '
+        "another and you pick the best parts of each.</p>"
+        '<div class="grid2"><div><b>For the outline</b><br>'
+        f"{_boxes(models, chosen.get('outline', ()), 'models_outline')}</div>"
+        "<div><b>For the post</b><br>"
+        f"{_boxes(models, chosen.get('write', ()), 'models_write')}</div></div></fieldset>"
+        if len(models) > 1
+        else ""
+    )
     heading = "Edit the brief" if existing else "New blog post"
     lead = (
         "Tell the model what to write. The more it is given, the less it has to guess. "
@@ -205,6 +240,7 @@ def brief_form(
             "to choose what replaces it, otherwise it becomes [hidden]",
             4,
         )
+        + chooser
         + f'<div class="buttons">{buttons}</div></form>'
     )
 
@@ -258,6 +294,12 @@ def _elapsed(seconds: float) -> str:
     return f"{minutes}:{rest:02d}"
 
 
+def _turn(run: PostRun) -> str:
+    if len(run.queue) < 2:
+        return ""
+    return f" (model {run.position + 1} of {len(run.queue)})"
+
+
 def _run_card(slug: str, run: PostRun | None, now: float) -> str:
     base = f"/posts/{esc(slug)}"
     if run is None:
@@ -275,7 +317,7 @@ def _run_card(slug: str, run: PostRun | None, now: float) -> str:
         shown = esc(run.partial) if run.partial else "Waiting for the first words..."
         return (
             '<section class="card runcard" aria-live="polite"><div class="runhead">'
-            f"<b>Writing the {what} with {esc(run.model)}</b>"
+            f"<b>Writing the {what} with {esc(run.model)}{_turn(run)}</b>"
             f'<span class="hint">{run.chars:,} characters &middot; '
             f"{_elapsed(now - run.started)} elapsed</span></div>"
             f'<pre class="pstream">{shown}</pre>'
@@ -287,15 +329,87 @@ def _run_card(slug: str, run: PostRun | None, now: float) -> str:
         return f'<p class="banner">The last attempt failed: {esc(run.error)}</p>'
     if run.state == "cancelled":
         return '<p class="hint">The last attempt was cancelled.</p>'
+    if run.state == "done" and run.error:
+        return f'<p class="banner">Some models failed: {esc(run.error)}</p>'
     return ""
 
 
-def _outline_card(slug: str, record: Mapping[str, Any], models: Sequence[str], busy: bool) -> str:
+def _candidates(slug: str, record: Mapping[str, Any], kind: str, grain: str) -> str:
+    """The answers of the models, in parts a person can tick and add to their own text."""
+    found = record.get("candidates")
+    book = found.get(kind) if isinstance(found, dict) else None
+    answers = [a for a in book or [] if isinstance(a, dict) and a.get("id")]
+    if not answers:
+        return ""
+    base = f"/posts/{esc(slug)}"
+    mine = str(record.get("outline" if kind == "outline" else "post", ""))
+    noun = "outline" if kind == "outline" else "post"
+    cards = []
+    for answer in reversed(answers):
+        text = str(answer.get("text", ""))
+        spans = _spans(text, answer.get("flags"))
+        items = []
+        for number, (start, end, part) in enumerate(pieces(text, kind, grain)):
+            added = part in mine
+            odd = any(a < end and b > start for a, b in spans)
+            classes = "piece" + (" added" if added else "") + (" odd" if odd else "")
+            tag = (
+                '<span class="tag">in your text</span>'
+                if added
+                else '<span class="tag" title="May say more than your material does">check</span>'
+                if odd
+                else ""
+            )
+            items.append(
+                f'<label class="{classes}"><input type="checkbox" name="pick" '
+                f'value="{esc(answer["id"])}.{number}"><span>{esc(part)}</span>{tag}</label>'
+            )
+        seconds = answer.get("seconds")
+        took = f" &middot; {_elapsed(float(seconds))}" if isinstance(seconds, int | float) else ""
+        cards.append(
+            f"<details open><summary>{esc(answer.get('model', 'model'))}{took} &middot; "
+            f"{len(items)} part(s)</summary>{''.join(items)}</details>"
+        )
+    if kind == "write":
+        other = "paragraph" if grain == "sentence" else "sentence"
+        toggle = (
+            f'<a class="grain" href="/posts/{esc(slug)}?grain={other}#build-write">'
+            f"Show {other}s instead</a>"
+        )
+    else:
+        toggle = ""
+    return (
+        '<div class="cands"><h3>Ideas from the models</h3>'
+        f'<p class="hint">Tick the parts you like and add them to your {noun}. '
+        f"Parts marked <b>check</b> may say more than your material does. {toggle}</p>"
+        f'<form method="post" action="{base}/gather">'
+        f'<input type="hidden" name="kind" value="{kind}">'
+        f'<input type="hidden" name="grain" value="{esc(grain)}">'
+        f"{''.join(cards)}"
+        f'<div class="buttons"><button class="primary">Add the ticked parts to my {noun}'
+        "</button></div></form>"
+        f'<form class="inline" method="post" action="{base}/candidates/clear" '
+        f'data-confirm="Forget these answers? Your {noun} stays as it is.">'
+        f'<input type="hidden" name="kind" value="{kind}">'
+        '<button class="secondary">Clear these answers</button></form></div>'
+    )
+
+
+def _outline_card(
+    slug: str,
+    record: Mapping[str, Any],
+    models: Sequence[str],
+    busy: bool,
+    picks: Mapping[str, Sequence[str]],
+    grain: str,
+) -> str:
     base = f"/posts/{esc(slug)}"
     outline = str(record.get("outline", ""))
-    picker = _model_select(models)
     if not models or busy:
         return ""
+    ask_outline = _model_picks(models, picks.get("outline", ()))
+    ask_write = _model_picks(models, picks.get("write", ()))
+    ideas = _candidates(slug, record, "outline", grain)
     brief = record.get("brief")
     points = str(brief.get("points", "")) if isinstance(brief, dict) else ""
     missing = uncovered_points(points, outline) if outline else []
@@ -308,29 +422,33 @@ def _outline_card(slug: str, record: Mapping[str, Any], models: Sequence[str], b
     )
     if not outline:
         return (
-            '<section class="card"><h2>Outline</h2>'
+            '<section class="card" id="build-outline"><h2>Outline</h2>'
             '<p class="hint">Let the model draft the structure first (opening, sections, '
-            "closing), so you can steer the post before it is written. About a minute.</p>"
-            f'<form class="runform" method="post" action="{base}/outline">{picker}'
+            "closing), so you can steer the post before it is written. About a minute each.</p>"
+            f'<form class="runform" method="post" action="{base}/outline">{ask_outline}'
             '<button class="primary">Suggest an outline</button></form>'
-            f'<form class="runform" method="post" action="{base}/write">{picker}'
-            '<button class="secondary">Skip it and write the post now</button></form></section>'
+            f'<form class="runform" method="post" action="{base}/write">{ask_write}'
+            '<button class="secondary">Skip it and write the post now</button></form>'
+            f"{ideas}</section>"
         )
     return (
-        '<section class="card"><h2>Outline</h2>'
-        '<p class="hint">Edit it freely. The post follows this outline.</p>'
+        '<section class="card" id="build-outline"><h2>Outline</h2>'
+        '<p class="hint">This is your outline. Edit it freely, or add the parts you like from '
+        "the models below. The post follows it.</p>"
         f"{note}"
         f'<form method="post" action="{base}/write">'
         f'<textarea name="outline" class="outline" rows="8" maxlength="{LIMITS["outline"]}">'
         f"\n{esc(outline)}</textarea>"
-        f'<div class="runform">{picker}'
+        f"{ask_write}"
+        '<div class="runform">'
         '<button class="primary">Write the post from this outline</button>'
         f'<button formaction="{base}/outline/save">Save outline</button>'
         "</div></form>"
         f'<form class="runform" method="post" action="{base}/outline" '
-        'data-confirm="Replace this outline with a new one from the model? '
-        'Changes you have not saved are lost.">'
-        f"{picker}<button>Suggest a new outline</button></form></section>"
+        'data-confirm="Ask for a new outline? With one model it replaces the outline above '
+        "(changes you have not saved are lost). With several, their answers appear below "
+        'for you to pick from.">'
+        f"{ask_outline}<button>Suggest a new outline</button></form>{ideas}</section>"
     )
 
 
@@ -371,9 +489,17 @@ def _voices_card(slug: str, record: Mapping[str, Any], models: Sequence[str], bu
     )
 
 
-def _post_card(slug: str, record: Mapping[str, Any], models: Sequence[str], busy: bool) -> str:
+def _post_card(
+    slug: str,
+    record: Mapping[str, Any],
+    models: Sequence[str],
+    busy: bool,
+    picks: Mapping[str, Sequence[str]],
+    grain: str,
+) -> str:
     post = str(record.get("post", ""))
-    if not post:
+    ideas = "" if busy else _candidates(slug, record, "write", grain)
+    if not post and not ideas:
         return ""
     base = f"/posts/{esc(slug)}"
     checks = record.get("checks") or []
@@ -397,23 +523,46 @@ def _post_card(slug: str, record: Mapping[str, Any], models: Sequence[str], busy
     again = (
         f'<form class="inline" method="post" action="{base}/write">'
         f'<input type="hidden" name="outline" value="{esc(record.get("outline", ""))}">'
-        f"{_model_select(models)}<button>Write it again</button></form>"
+        f"{_model_picks(models, picks.get('write', ()))}<button>Write it again</button></form>"
         if models and not busy
         else ""
     )
+    editor = (
+        '<details class="edit"><summary>Edit or build the text</summary>'
+        f'<form method="post" action="{base}/post/save">'
+        f'<textarea name="post" class="outline" rows="16" maxlength="{POST_LIMIT}">'
+        f"\n{esc(post)}</textarea>"
+        '<div class="buttons"><button class="primary">Save the text</button></div></form>'
+        "</details>"
+        if not busy
+        else ""
+    )
+    who = record.get("model")
+    byline = (
+        "Put together from the parts you picked."
+        if who == "picks"
+        else f"Written by {esc(who or 'the model')}."
+    )
+    if not post:
+        return (
+            '<section class="card" id="build-write"><h2>The post</h2>'
+            '<p class="hint">Nothing is here yet. Tick parts below to build it, or write '
+            f"it yourself.</p>{editor}{ideas}</section>"
+        )
     return (
-        '<section class="card"><h2>The post</h2>'
-        f'<p class="hint">Written by {esc(record.get("model", "the model"))}. '
+        '<section class="card" id="build-write"><h2>The post</h2>'
+        f'<p class="hint">{byline} '
         "These checks look for numbers and names the material does not contain, and for "
         "anything that looks private. They are not a substitute for reading it.</p>"
         f"{verdict}"
         f"{legend}"
         f'<div class="ppost">{marked(post, record.get("flags"))}</div>'
+        f"{editor}"
         '<div class="buttons">'
         f'<a class="btn" href="{base}/post.md">Download .md</a>'
         f'<form class="inline" method="post" action="{base}/to-draft">'
         '<button class="secondary">Save as a draft to polish</button></form>'
-        f"{again}</div></section>"
+        f"{again}</div>{ideas}</section>"
     )
 
 
@@ -422,7 +571,10 @@ def post_main(
     run: PostRun | None,
     models: Sequence[str],
     now: float,
+    grain: str = "paragraph",
+    picks: Mapping[str, Sequence[str]] | None = None,
 ) -> str:
+    chosen = picks or {}
     slug = str(record["slug"])
     base = f"/posts/{esc(slug)}"
     busy = run is not None and run.running
@@ -439,8 +591,8 @@ def post_main(
     return (
         title
         + _run_card(slug, run, now)
-        + _post_card(slug, record, models, busy)
+        + _post_card(slug, record, models, busy, chosen, grain)
         + _voices_card(slug, record, models, busy)
-        + _outline_card(slug, record, models, busy)
+        + _outline_card(slug, record, models, busy, chosen, grain)
         + _summary(record)
     )

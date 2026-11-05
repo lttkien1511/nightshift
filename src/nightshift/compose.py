@@ -486,6 +486,97 @@ def trim_cut_off(text: str) -> tuple[str, bool]:
     return "\n\n".join(paragraphs).rstrip() + "\n", True
 
 
+POST_LIMIT = 30000
+GRAINS = ("paragraph", "sentence")
+MAX_PICKS = 60
+
+
+def pieces(text: str, kind: str, grain: str = "paragraph") -> list[tuple[int, int, str]]:
+    """The parts of a model's answer a person can pick from, with where each sits in the text.
+
+    An outline is picked line by line. A post is picked paragraph by paragraph, or sentence by
+    sentence when the person asks for finer parts. Headings and code stay whole.
+    """
+    found: list[tuple[int, int, str]] = []
+    if kind == "outline":
+        position = 0
+        for line in text.split("\n"):
+            if line.strip():
+                found.append((position, position + len(line), line.strip()))
+            position += len(line) + 1
+        return found
+    position = 0
+    fenced = False
+    for chunk in re.split(r"(\n[ \t]*\n)", text):
+        start = position
+        position += len(chunk)
+        body = chunk.strip()
+        if not body:
+            continue
+        start += len(chunk) - len(chunk.lstrip())
+        ticks = body.count("```")
+        whole = fenced or ticks > 0 or body.startswith("#") or grain != "sentence"
+        if ticks % 2:
+            fenced = not fenced
+        if whole:
+            found.append((start, start + len(body), body))
+            continue
+        cursor = 0
+        for gap in [*_SENTENCE_END.finditer(body), None]:
+            end = gap.start() if gap else len(body)
+            if body[cursor:end].strip():
+                found.append((start + cursor, start + end, body[cursor:end]))
+            cursor = gap.end() if gap else end
+    return found
+
+
+def gather(candidates: object, working: str, kind: str, grain: str, picks: list[str]) -> str:
+    """Add the parts a person picked from the models' answers to the text they are building.
+
+    A pick is ``<answer id>.<part number>``. Parts already in the text are skipped, and
+    sentences taken one after another from the same paragraph stay together.
+    """
+    book = candidates.get(kind) if isinstance(candidates, dict) else None
+    answers = {str(c.get("id")): c for c in book or [] if isinstance(c, dict)}
+    if not picks or len(picks) > MAX_PICKS:
+        raise BriefError("pick at least one part")
+    wanted: list[tuple[str, int]] = []
+    for pick in picks:
+        name, _, number = pick.rpartition(".")
+        if name not in answers or not number.isdigit():
+            raise BriefError("that part is no longer there")
+        wanted.append((name, int(number)))
+    text = working.strip()
+    previous: tuple[str, int] | None = None
+    for name, number in wanted:
+        parts = pieces(str(answers[name].get("text", "")), kind, grain)
+        if number >= len(parts):
+            raise BriefError("that part is no longer there")
+        part = parts[number][2]
+        joined = grain == "sentence" and kind == "write" and previous == (name, number - 1)
+        previous = (name, number)
+        if part in text:
+            continue
+        if not text:
+            glue = ""
+        elif kind == "outline":
+            glue = "\n"
+        else:
+            glue = " " if joined else "\n\n"
+        text += glue + part
+    return text
+
+
+def review_post(
+    record: dict[str, object], text: str
+) -> tuple[list[dict[str, str]], list[list[int]]]:
+    """The checks and the highlights for a post a person put together or edited."""
+    inputs = build_inputs(record, "write")
+    checks = check_post(text, inputs, 0, 0)
+    flags = [list(span) for span in flag_pairs(text, inputs.source, inputs.mode == "expand")]
+    return checks, flags
+
+
 def parse_voices(text: str) -> list[str]:
     """The sample paragraphs the model wrote, split on its ``---`` dividers. At most three.
 

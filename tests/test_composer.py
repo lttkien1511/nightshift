@@ -1,5 +1,7 @@
+import io
 import json
 import threading
+import urllib.error
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
@@ -7,7 +9,7 @@ import pytest
 from nightshift.compose import OUTLINE_TOKENS, ensure_frame, normalize_brief
 from nightshift.composer import Composer
 from nightshift.gate import Gate
-from nightshift.ollama import OllamaConfig, OllamaError, generate_stream
+from nightshift.ollama import OllamaConfig, OllamaError, generate_stream, list_models
 from nightshift.runner import Busy, Runner, RunnerError
 from nightshift.storage import MAX_POSTS, QueueFull, Store
 
@@ -362,3 +364,175 @@ def test_a_post_cut_off_by_the_token_cap_loses_its_last_half_sentence_and_says_s
     record = store.post(slug)
     assert record["post"].rstrip().endswith("đã xong.")
     assert any("ran out of room" in c["text"] for c in record["checks"])
+
+
+OUT1 = "- Mở bài: một\n- Phần: hai\n- Kết bài: ba"
+OUT2 = "- Mở bài: khác\n- Phần: nữa\n- Kết bài: hết"
+THREE_VOICES = (
+    "Một đoạn mở bài theo giọng tâm sự với bạn thân.\n---\n"
+    "Buổi tối hôm đó tôi ngồi một mình trước màn hình máy tính.\n---\n"
+    "Hóa ra mọi chuyện buồn cười hơn tôi tưởng rất nhiều."
+)
+
+
+def composer_for(store, answers, gate=None):
+    """Each model gives the text set for it; a model set to an exception fails with it."""
+
+    def make(model):
+        answer = answers[model]
+        if isinstance(answer, Exception):
+
+            def broken(system, prompt, num_predict, on_text):
+                raise answer
+
+            return broken
+        return fake_stream([answer])
+
+    return Composer(store, make, list(answers), gate or Gate())
+
+
+def test_several_models_leave_their_answers_as_candidates_and_the_first_fills_the_outline(
+    store, slug
+):
+    composer = composer_for(store, {"m1": OUT1, "m2": OUT2})
+    composer.start(slug, "outline", models=["m1", "m2"], replace=False)
+    composer.wait()
+    record = store.post(slug)
+    assert [c["model"] for c in record["candidates"]["outline"]] == ["m1", "m2"]
+    assert "một" in record["outline"] and "khác" not in record["outline"]
+    assert record["stage"] == "outline"
+    assert composer.state.state == "done" and composer.state.queue == ("m1", "m2")
+    assert all(c["id"] and c["seconds"] >= 0 for c in record["candidates"]["outline"])
+
+
+def test_a_new_answer_replaces_the_outline_only_when_asked_to(store, slug):
+    composer = composer_for(store, {"m1": OUT1, "m2": OUT2})
+    store.update_post(slug, outline="- Mở bài: của tôi")
+    composer.start(slug, "outline", model="m2", replace=False)
+    composer.wait()
+    assert store.post(slug)["outline"] == "- Mở bài: của tôi"
+    assert len(store.post(slug)["candidates"]["outline"]) == 1
+    composer.start(slug, "outline", model="m2")
+    composer.wait()
+    assert "khác" in store.post(slug)["outline"]
+
+
+def test_a_failing_model_does_not_stop_the_others(store, slug):
+    composer = composer_for(store, {"m1": RuntimeError("boom"), "m2": OUT2})
+    composer.start(slug, "outline", models=["m1", "m2"], replace=False)
+    composer.wait()
+    state = composer.state
+    assert state.state == "done" and "m1" in state.error and "boom" in state.error
+    assert [c["model"] for c in store.post(slug)["candidates"]["outline"]] == ["m2"]
+
+
+def test_when_every_model_fails_the_job_fails_and_says_why(store, slug):
+    composer = composer_for(store, {"m1": RuntimeError("aaa"), "m2": RuntimeError("bbb")})
+    composer.start(slug, "outline", models=["m1", "m2"], replace=False)
+    composer.wait()
+    assert composer.state.state == "failed"
+    assert "aaa" in composer.state.error and "bbb" in composer.state.error
+    assert not store.post(slug).get("candidates")
+
+
+def test_cancelling_stops_the_rest_of_the_queue_but_keeps_what_was_finished(store, slug):
+    started, release = threading.Event(), threading.Event()
+
+    def make(model):
+        if model == "m1":
+            return fake_stream([OUT1])
+
+        def slow(system, prompt, num_predict, on_text):
+            on_text("partial")
+            started.set()
+            release.wait(5)
+            return "partial"
+
+        return slow
+
+    composer = Composer(store, make, ["m1", "m2", "m3"], Gate())
+    composer.start(slug, "outline", models=["m1", "m2", "m3"], replace=False)
+    assert started.wait(5)
+    composer.cancel()
+    release.set()
+    composer.wait()
+    assert composer.state.state == "cancelled"
+    assert [c["model"] for c in store.post(slug)["candidates"]["outline"]] == ["m1"]
+
+
+def test_only_the_newest_answers_are_kept(store, slug):
+    composer = composer_for(store, {"m1": OUT1})
+    for _ in range(14):
+        composer.start(slug, "outline", model="m1", replace=False)
+        composer.wait()
+    assert len(store.post(slug)["candidates"]["outline"]) == 12
+
+
+def test_too_many_or_unknown_models_are_refused_before_anything_starts(store, slug):
+    composer = composer_for(store, {name: OUT1 for name in "abcde"})
+    with pytest.raises(RunnerError):
+        composer.start(slug, "outline", models=list("abcde"))
+    with pytest.raises(RunnerError):
+        composer.start(slug, "outline", models=["zzz"])
+    assert composer.state is None
+
+
+def test_the_list_of_models_may_be_a_function_that_changes(store):
+    names = ["m1"]
+    composer = Composer(store, lambda model: fake_stream([OUT1]), lambda: names, Gate())
+    assert composer.models == ["m1"]
+    names.append("m2")
+    assert composer.models == ["m1", "m2"]
+
+
+def test_each_written_candidate_carries_its_own_checks(store, slug):
+    composer = composer_for(
+        store, {"m1": "# T\n\nGiảm 450 MB hẳn rồi.", "m2": "# T\n\nGỡ xong thôi."}
+    )
+    composer.start(slug, "write", models=["m1", "m2"], replace=False)
+    composer.wait()
+    record = store.post(slug)
+    first, second = record["candidates"]["write"]
+    assert record["post"].startswith("# T") and "450" in record["post"]
+    assert any("450" in c["text"] for c in first["checks"])
+    assert not any("450" in c["text"] for c in second["checks"])
+    assert any("450" in c["text"] for c in record["checks"])
+
+
+def test_voices_use_one_model_even_when_more_are_ticked(store, slug):
+    composer = composer_for(store, {"m1": THREE_VOICES, "m2": THREE_VOICES})
+    composer.start(slug, "voices", models=["m1", "m2"])
+    composer.wait()
+    assert composer.state.queue == ("m1",) and len(store.post(slug)["voices"]) == 3
+
+
+def test_stream_sends_the_thinking_switch_only_when_asked(serve):
+    server = serve([{"response": "ok", "done": True}])
+    generate_stream(server.cfg, "s", "p", lambda _piece: True)
+    generate_stream(server.cfg, "s", "p", lambda _piece: True, think=False)
+    assert "think" not in server.requests[0] and server.requests[1]["think"] is False
+
+
+class _Reply:
+    def __init__(self, body):
+        self.body = body
+
+    def __enter__(self):
+        return io.BytesIO(self.body)
+
+    def __exit__(self, *exc):
+        return False
+
+
+def test_the_models_ollama_has_are_listed_and_a_silent_ollama_gives_nothing(monkeypatch):
+    body = json.dumps(
+        {"models": [{"name": "qwen3.5:9b"}, {"name": "nomic-embed-text"}, {"name": "gemma3:12b"}]}
+    ).encode()
+    monkeypatch.setattr("urllib.request.urlopen", lambda url, timeout: _Reply(body))
+    assert list_models("http://x") == ["gemma3:12b", "qwen3.5:9b"]
+
+    def refuse(url, timeout):
+        raise urllib.error.URLError("down")
+
+    monkeypatch.setattr("urllib.request.urlopen", refuse)
+    assert list_models("http://x") == []

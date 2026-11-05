@@ -3,12 +3,12 @@ import threading
 import pytest
 from fastapi.testclient import TestClient
 
-from nightshift.compose import OUTLINE_TOKENS, VOICES_TOKENS, ensure_frame
+from nightshift.compose import OUTLINE_TOKENS, VOICES_TOKENS, ensure_frame, pieces
 from nightshift.composer import Composer
 from nightshift.gate import Gate
 from nightshift.runner import Runner
 from nightshift.storage import Store
-from nightshift.web import create_app
+from nightshift.web import composer_from_env, create_app
 
 FORM = {
     "topic": "Gỡ Rancher khỏi k3s",
@@ -329,7 +329,7 @@ def test_the_outline_can_be_saved_without_writing(client, store, composer):
     assert composer.state is None
     page = client.get(f"/posts/{slug}").text
     assert 'formaction="/posts/' in page and "Save outline" in page
-    assert "- Mở bài: một" in page and "Changes you have not saved are lost" in page
+    assert "- Mở bài: một" in page and "changes you have not saved are lost" in page
 
 
 def test_saving_an_empty_outline_clears_it_and_bad_saves_are_refused(
@@ -459,3 +459,195 @@ def test_editing_the_brief_keeps_the_voice_fields(client, store):
     client.post(f"/posts/{slug}/edit", data={**FORM, "voice_address": "mình - bạn"})
     assert store.post(slug)["brief"]["voice_address"] == "mình - bạn"
     assert store.blog_voice()["voice_address"] == "mình - bạn"
+
+
+class PerModel:
+    """Each model has its own outline and post."""
+
+    def __init__(self, texts):
+        self.texts = texts
+
+    def make(self, model):
+        texts = self.texts[model]
+
+        def stream(system, prompt, num_predict, on_text):
+            text = texts["outline"] if num_predict == OUTLINE_TOKENS else texts["write"]
+            on_text(text)
+            return text
+
+        return stream
+
+
+@pytest.fixture
+def duo(store):
+    texts = {
+        "m1": {
+            "outline": "- Mở bài: một\n- Phần: hai\n- Kết bài: ba",
+            "write": "# Gỡ Rancher\n\nĐoạn đầu của m1.\n\nChạy xong rồi.",
+        },
+        "m2": {
+            "outline": "- Mở bài: khác\n- Phần: nữa\n- Kết bài: hết",
+            "write": "# Gỡ Rancher\n\nĐoạn đầu của m2. Giảm 450 MB hẳn.\n\nXong.",
+        },
+    }
+    composer = Composer(store, PerModel(texts).make, ["m1", "m2"], Gate())
+    runner = Runner(store, lambda m: lambda b: b, ["m1"], gate=composer.gate)
+    return TestClient(create_app(store, runner, composer)), composer
+
+
+def test_the_new_post_form_offers_models_for_the_outline_and_for_the_post(client):
+    page = client.get("/posts/new").text
+    assert 'name="models_outline"' in page and 'name="models_write"' in page
+    assert "For the outline" in page and "For the post" in page
+
+
+def test_models_ticked_in_the_form_are_kept_and_ticked_again_next_time(client, store):
+    response = create(client, models_outline=["m1", "m2"], models_write=["m2"])
+    slug = slug_of(response)
+    assert store.post(slug)["models"] == {"outline": ["m1", "m2"], "write": ["m2"]}
+    assert store.blog_voice()["pick_outline"] == "m1,m2" and store.blog_voice()["voice_humor"]
+    page = client.get("/posts/new").text
+    assert 'name="models_write" value="m2" checked' in page
+    assert 'name="models_write" value="m1" checked' not in page
+    assert 'name="models_write" value="zzz"' not in page
+    other = slug_of(create(client, models_write=["zzz"]))
+    assert "models" not in store.post(other)
+
+
+def test_two_models_give_two_answers_to_pick_parts_from(duo, store):
+    client, composer = duo
+    slug = slug_of(create(client))
+    client.post(f"/posts/{slug}/outline", data={"models": ["m1", "m2"]}, follow_redirects=False)
+    composer.wait()
+    record = store.post(slug)
+    first, second = record["candidates"]["outline"]
+    assert record["models"]["outline"] == ["m1", "m2"] and "một" in record["outline"]
+    page = client.get(f"/posts/{slug}").text
+    shown = sum(len(pieces(c["text"], "outline")) for c in (first, second))
+    assert "Ideas from the models" in page and page.count('name="pick"') == shown
+    parts = pieces(second["text"], "outline")
+    wanted = next(n for n, part in enumerate(parts) if "nữa" in part[2])
+    added = client.post(
+        f"/posts/{slug}/gather",
+        data={"kind": "outline", "grain": "paragraph", "pick": [f"{second['id']}.{wanted}"]},
+        follow_redirects=False,
+    )
+    assert added.status_code == 303 and "#build-outline" in added.headers["location"]
+    assert store.post(slug)["outline"].endswith(parts[wanted][2])
+    assert "một" in store.post(slug)["outline"]
+    assert first["text"] != second["text"]
+    assert "in your text" in client.get(f"/posts/{slug}").text
+
+
+def test_picks_that_make_no_sense_are_refused(duo, store):
+    client, composer = duo
+    slug = slug_of(create(client))
+    client.post(f"/posts/{slug}/outline", data={"models": ["m1"]}, follow_redirects=False)
+    composer.wait()
+    cid = store.post(slug)["candidates"]["outline"][0]["id"]
+    base = f"/posts/{slug}/gather"
+    assert client.post(base, data={"kind": "outline", "pick": ["nope.0"]}).status_code == 400
+    assert client.post(base, data={"kind": "outline"}).status_code == 400
+    assert client.post(base, data={"kind": "voices", "pick": [f"{cid}.0"]}).status_code == 400
+    assert (
+        client.post(base, data={"kind": "outline", "grain": "x", "pick": [f"{cid}.0"]}).status_code
+        == 400
+    )
+    assert client.post("/posts/nope/gather", data={"kind": "outline"}).status_code == 404
+
+
+def test_gathering_is_refused_while_the_model_is_writing(client, composer, script):
+    slug = slug_of(create(client))
+    script.hold.clear()
+    client.post(f"/posts/{slug}/outline", data={}, follow_redirects=False)
+    try:
+        refused = client.post(f"/posts/{slug}/gather", data={"kind": "outline", "pick": ["x.0"]})
+        assert refused.status_code == 409
+        assert client.post(f"/posts/{slug}/post/save", data={"post": "x"}).status_code == 409
+    finally:
+        script.hold.set()
+        composer.wait()
+
+
+def test_the_run_card_says_which_model_of_several_is_working(client, composer, script):
+    slug = slug_of(create(client))
+    script.hold.clear()
+    client.post(f"/posts/{slug}/outline", data={"models": ["m1", "m2"]}, follow_redirects=False)
+    try:
+        assert "(model 1 of 2)" in client.get(f"/posts/{slug}").text
+    finally:
+        script.hold.set()
+        composer.wait()
+
+
+def test_parts_picked_for_the_post_are_checked_again_and_sentences_can_be_shown(duo, store):
+    client, composer = duo
+    slug = slug_of(create(client))
+    client.post(f"/posts/{slug}/outline/save", data={"outline": "- Mở bài: một"})
+    client.post(f"/posts/{slug}/write", data={"models": ["m1", "m2"]}, follow_redirects=False)
+    composer.wait()
+    record = store.post(slug)
+    assert "m1" in record["post"] and len(record["candidates"]["write"]) == 2
+    second = record["candidates"]["write"][1]
+    assert "450" not in record["post"]
+    page = client.get(f"/posts/{slug}?grain=sentence").text
+    assert "Show paragraphs instead" in page and "Show sentences instead" not in page
+    assert "Show sentences instead" in client.get(f"/posts/{slug}").text
+    index = [p[2] for p in pieces(second["text"], "write")].index(
+        "Đoạn đầu của m2. Giảm 450 MB hẳn."
+    )
+    client.post(
+        f"/posts/{slug}/gather",
+        data={"kind": "write", "grain": "paragraph", "pick": [f"{second['id']}.{index}"]},
+        follow_redirects=False,
+    )
+    record = store.post(slug)
+    assert "Giảm 450 MB" in record["post"] and record["model"] == "picks"
+    assert any("450" in c["text"] for c in record["checks"])
+    assert "Put together from the parts you picked" in client.get(f"/posts/{slug}").text
+
+
+def test_the_post_text_can_be_edited_by_hand_and_cleared(client, store, composer):
+    slug = slug_of(create(client))
+    client.post(f"/posts/{slug}/write", data={}, follow_redirects=False)
+    composer.wait()
+    saved = client.post(
+        f"/posts/{slug}/post/save",
+        data={"post": "# Mới\r\n\r\nSửa tay 999 xong."},
+        follow_redirects=False,
+    )
+    assert saved.status_code == 303
+    record = store.post(slug)
+    assert record["post"] == "# Mới\n\nSửa tay 999 xong." and record["stage"] == "done"
+    assert any("999" in c["text"] for c in record["checks"]) and record["model"] == "picks"
+    assert client.post(f"/posts/{slug}/post/save", data={"post": "x" * 30001}).status_code == 400
+    client.post(f"/posts/{slug}/post/save", data={"post": "  "})
+    cleared = store.post(slug)
+    assert cleared["post"] == "" and cleared["stage"] == "brief" and cleared["checks"] == []
+    # the answers of the models are still there to build a new post from
+    assert "Nothing is here yet" in client.get(f"/posts/{slug}").text
+
+
+def test_answers_can_be_cleared_and_the_text_built_stays(duo, store):
+    client, composer = duo
+    slug = slug_of(create(client))
+    client.post(f"/posts/{slug}/outline", data={"models": ["m1", "m2"]}, follow_redirects=False)
+    composer.wait()
+    before = store.post(slug)["outline"]
+    cleared = client.post(f"/posts/{slug}/candidates/clear", data={"kind": "outline"})
+    assert cleared.status_code == 200 or cleared.history
+    assert store.post(slug)["candidates"] == {} and store.post(slug)["outline"] == before
+    assert client.post(f"/posts/{slug}/candidates/clear", data={"kind": "x"}).status_code == 400
+
+
+def test_blog_models_come_from_the_environment_or_from_ollama(store, monkeypatch):
+    monkeypatch.delenv("NIGHTSHIFT_POST_MODELS", raising=False)
+    monkeypatch.delenv("NIGHTSHIFT_RUN_MODELS", raising=False)
+    assert composer_from_env(store, Gate()).models == []
+    monkeypatch.setenv("NIGHTSHIFT_RUN_MODELS", "a")
+    monkeypatch.setattr("nightshift.web.list_models", lambda url: ["a", "b"])
+    assert composer_from_env(store, Gate()).models == ["a", "b"]
+    monkeypatch.setattr("nightshift.web.list_models", lambda url: [])
+    assert composer_from_env(store, Gate()).models == ["a"]
+    monkeypatch.setenv("NIGHTSHIFT_POST_MODELS", "x, y")
+    assert composer_from_env(store, Gate()).models == ["x", "y"]

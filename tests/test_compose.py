@@ -11,11 +11,14 @@ from nightshift.compose import (
     ensure_frame,
     ensure_points,
     flag_pairs,
+    gather,
     hide_terms,
     normalize_brief,
     parse_terms,
     parse_voices,
+    pieces,
     restore,
+    review_post,
     tidy_post,
     trim_cut_off,
     uncovered_points,
@@ -567,3 +570,65 @@ def test_a_sentence_cut_off_at_the_end_is_dropped_with_its_empty_heading():
     text, cut = trim_cut_off("# T\n\nĐoạn một xong.\n")
     assert not cut and text == "# T\n\nĐoạn một xong.\n"
     assert not trim_cut_off("```\ncode\n```")[1]
+
+
+def test_an_outline_is_picked_line_by_line_and_every_part_knows_its_place():
+    text = "- Mở bài: a\n\n- Phần một: b\n"
+    found = pieces(text, "outline")
+    assert [part for _, _, part in found] == ["- Mở bài: a", "- Phần một: b"]
+    assert all(text[start:end] == part for start, end, part in found)
+
+
+def test_a_post_is_picked_by_paragraph_or_sentence_and_code_is_never_split():
+    text = "# Tiêu đề\n\nCâu một. Câu hai dài hơn! Câu ba?\n\n```\nlệnh. một\n\nhai\n```\n"
+    by_paragraph = pieces(text, "write")
+    assert [p[2] for p in by_paragraph][:2] == ["# Tiêu đề", "Câu một. Câu hai dài hơn! Câu ba?"]
+    by_sentence = pieces(text, "write", "sentence")
+    assert [p[2] for p in by_sentence] == [
+        "# Tiêu đề",
+        "Câu một.",
+        "Câu hai dài hơn!",
+        "Câu ba?",
+        "```\nlệnh. một",
+        "hai\n```",
+    ]
+    assert all(text[start:end] == part for start, end, part in by_sentence)
+
+
+CANDIDATES = {
+    "outline": [{"id": "o1", "text": "- Mở bài: x\n- Phần: y"}],
+    "write": [
+        {"id": "a1", "text": "Câu một. Câu hai.\n\nĐoạn hai."},
+        {"id": "b2", "text": "Khác hẳn."},
+    ],
+}
+
+
+def test_picked_parts_are_added_in_order_and_what_is_already_there_is_skipped():
+    both = ["o1.0", "o1.1"]
+    assert gather(CANDIDATES, "", "outline", "paragraph", both) == "- Mở bài: x\n- Phần: y"
+    assert gather(CANDIDATES, "- Mở bài: x", "outline", "paragraph", both) == (
+        "- Mở bài: x\n- Phần: y"
+    )
+    mixed = gather(CANDIDATES, "Của tôi.", "write", "paragraph", ["a1.1", "b2.0"])
+    assert mixed == "Của tôi.\n\nĐoạn hai.\n\nKhác hẳn."
+
+
+def test_sentences_taken_in_a_row_stay_in_one_paragraph():
+    picks = ["a1.0", "a1.1", "b2.0"]
+    text = gather(CANDIDATES, "Của tôi.", "write", "sentence", picks)
+    assert text == "Của tôi.\n\nCâu một. Câu hai.\n\nKhác hẳn."
+
+
+def test_picks_that_do_not_exist_are_refused():
+    for picks in ([], ["zz.0"], ["a1.9"], ["a1.x"], ["a1"]):
+        with pytest.raises(BriefError):
+            gather(CANDIDATES, "", "write", "paragraph", picks)
+    with pytest.raises(BriefError):
+        gather(None, "", "write", "paragraph", ["a1.0"])
+
+
+def test_a_post_put_together_by_hand_is_looked_over_again():
+    brief = normalize_brief({"topic": "x", "material": "Chạy helm."})
+    checks, flags = review_post({"brief": brief, "outline": ""}, "Tôi chạy helm và giảm 450 MB.")
+    assert any("450" in c["text"] for c in checks) and isinstance(flags, list)

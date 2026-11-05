@@ -14,11 +14,20 @@ from fastapi import FastAPI, Form, HTTPException, Request, Response
 from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse, RedirectResponse
 
 from . import __version__, ui, ui_posts
-from .compose import LIMITS, VOICE_FIELDS, BriefError, normalize_brief
+from .compose import (
+    GRAINS,
+    LIMITS,
+    POST_LIMIT,
+    VOICE_FIELDS,
+    BriefError,
+    gather,
+    normalize_brief,
+    review_post,
+)
 from .composer import Composer, Stream
 from .gate import Gate
 from .merge import MergeError, merge
-from .ollama import OllamaConfig, OllamaEditor, generate_stream
+from .ollama import OllamaConfig, OllamaEditor, generate_stream, list_models
 from .runner import Busy, Runner, RunnerError
 from .status import snapshot
 from .storage import (
@@ -54,10 +63,21 @@ COMPOSE_CTX = 8192  # a post needs room for the material, the outline and the an
 
 
 def composer_from_env(store: Store, gate: Gate) -> Composer:
-    """Writing posts uses the same models and Ollama as Run now; no models, no buttons."""
-    raw = os.environ.get("NIGHTSHIFT_RUN_MODELS", "")
-    models = [m.strip() for m in raw.split(",") if m.strip()]
+    """Blog posts have their own models: NIGHTSHIFT_POST_MODELS, else whatever Ollama has
+    downloaded. Without any models configured there are no buttons."""
+    listed = _names(os.environ.get("NIGHTSHIFT_POST_MODELS", ""))
+    fallback = _names(os.environ.get("NIGHTSHIFT_RUN_MODELS", ""))
     url = os.environ.get("NIGHTSHIFT_OLLAMA_URL", OllamaConfig.url)
+    seen: dict[str, object] = {"at": -60.0, "found": []}
+
+    def models() -> list[str]:
+        if listed or not fallback:
+            return listed
+        if time.monotonic() - float(seen["at"]) > 30:  # type: ignore[arg-type]
+            seen.update(at=time.monotonic(), found=list_models(url))
+        found = seen["found"]
+        return list(found) if isinstance(found, list) and found else fallback
+
     silence = float(os.environ.get("NIGHTSHIFT_RUN_TIMEOUT", "300"))
     context = int(os.environ.get("NIGHTSHIFT_COMPOSE_CTX", str(COMPOSE_CTX)))
 
@@ -72,12 +92,33 @@ def composer_from_env(store: Store, gate: Gate) -> Composer:
             if voice.strip():
                 styled += f"\n\nSamples of the author's own voice, for style only:\n{voice.strip()}"
             return generate_stream(
-                cfg, styled, prompt, on_text, num_predict=num_predict, num_ctx=context
+                cfg,
+                styled,
+                prompt,
+                on_text,
+                num_predict=num_predict,
+                num_ctx=context,
+                think=False if model.startswith("qwen3") else None,  # no thinking aloud
             )
 
         return stream
 
     return Composer(store, make_stream, models, gate)
+
+
+def _names(raw: str) -> list[str]:
+    return [m.strip() for m in raw.split(",") if m.strip()]
+
+
+async def _form_with_lists(request: Request) -> tuple[dict[str, str], dict[str, list[str]]]:
+    """The form fields, with the model choices (several checkboxes of one name) kept apart."""
+    form = await request.form()
+    lists = {
+        name: [v for v in form.getlist(name) if isinstance(v, str)]
+        for name in ("models_outline", "models_write")
+    }
+    values = {k: v for k, v in form.items() if isinstance(v, str) and k not in lists}
+    return values, lists
 
 
 async def _form(request: Request) -> dict[str, str]:
@@ -158,13 +199,38 @@ def create_app(
         state = composer.state
         return state is not None and state.running and state.slug == slug
 
-    def start_job(slug: str, kind: str, model: str = "") -> None:
+    def start_job(slug: str, kind: str, picked: list[str]) -> None:
         try:
-            composer.start(slug, kind, model)
+            composer.start(slug, kind, models=picked, replace=len(picked) <= 1)
         except Busy as exc:
             raise HTTPException(409, str(exc)) from exc
         except RunnerError as exc:
             raise HTTPException(400, str(exc)) from exc
+        if picked and kind in {"outline", "write"}:
+            remember_models(slug, kind, picked)
+
+    def only_known(picked: list[str]) -> list[str]:
+        known = composer.models
+        return [m for m in dict.fromkeys(picked) if m in known]
+
+    def remember_models(slug: str, kind: str, picked: list[str]) -> None:
+        """Keep the models chosen for a step with the post, and offer them for the next post."""
+        record = post_or_404(slug)
+        kept = record.get("models")
+        store.update_post(slug, models={**(kept if isinstance(kept, dict) else {}), kind: picked})
+        store.save_blog_voice({f"pick_{kind}": ",".join(picked)})
+
+    def saved_picks(record: dict[str, object] | None) -> dict[str, list[str]]:
+        """The models to tick: those of this post, or else those of the last post."""
+        kept = record.get("models") if record else None
+        if isinstance(kept, dict):
+            return {
+                k: [m for m in v if isinstance(m, str)]
+                for k, v in kept.items()
+                if isinstance(v, list)
+            }
+        last = store.blog_voice()
+        return {k: _names(last.get(f"pick_{k}", "")) for k in ("outline", "write")}
 
     def brief_page(
         values: dict[str, str] | None,
@@ -173,8 +239,17 @@ def create_app(
         existing: bool = False,
         post_active: str = "",
         status: int = 200,
+        picks: dict[str, list[str]] | None = None,
     ) -> HTMLResponse:
-        main = ui_posts.brief_form(values, action, bool(composer.models), error, existing)
+        main = ui_posts.brief_form(
+            values,
+            action,
+            bool(composer.models),
+            error,
+            existing,
+            composer.models,
+            picks if picks is not None else saved_picks(None),
+        )
         response = render("Blog post brief", main, post_active=post_active)
         response.status_code = status
         return response
@@ -300,26 +375,37 @@ def create_app(
 
     @app.post("/posts")
     async def create_post(request: Request) -> Response:
-        values = await _form(request)
+        values, lists = await _form_with_lists(request)
         action = values.pop("action", "save")
+        picks = {
+            "outline": only_known(lists["models_outline"]),
+            "write": only_known(lists["models_write"]),
+        }
         try:
             brief = normalize_brief(values)
             slug = store.create_post(brief["topic"], brief)
             store.save_blog_voice({k: brief[k] for k in VOICE_FIELDS})
         except BriefError as exc:
-            return brief_page(values, "/posts", str(exc), status=400)
+            return brief_page(values, "/posts", str(exc), status=400, picks=picks)
         except QueueFull as exc:
             raise HTTPException(429, str(exc)) from exc
+        if picks["outline"] or picks["write"]:
+            store.update_post(slug, models={k: v for k, v in picks.items() if v})
+            store.save_blog_voice({f"pick_{k}": ",".join(v) for k, v in picks.items() if v})
         if action in {"outline", "write"}:
             # The post is saved either way; its page says why nothing is running.
+            chosen = picks[action]
             with contextlib.suppress(RunnerError):
-                composer.start(slug, action)
+                composer.start(slug, action, models=chosen, replace=len(chosen) <= 1)
         return RedirectResponse(f"/posts/{slug}", status_code=303)
 
     @app.get("/posts/{slug}", response_class=HTMLResponse)
-    def show_post(slug: str) -> HTMLResponse:
+    def show_post(slug: str, grain: str = "paragraph") -> HTMLResponse:
         record = post_or_404(slug)
-        main = ui_posts.post_main(record, composer.state, composer.models, time.time())
+        grain = grain if grain in GRAINS else "paragraph"
+        main = ui_posts.post_main(
+            record, composer.state, composer.models, time.time(), grain, saved_picks(record)
+        )
         return render(str(record.get("title", slug)), main, post_active=slug)
 
     @app.get("/posts/{slug}/edit", response_class=HTMLResponse)
@@ -327,35 +413,57 @@ def create_app(
         record = post_or_404(slug)
         brief = record.get("brief")
         values = {k: str(v) for k, v in brief.items()} if isinstance(brief, dict) else {}
-        return brief_page(values, f"/posts/{slug}/edit", existing=True, post_active=slug)
+        return brief_page(
+            values,
+            f"/posts/{slug}/edit",
+            existing=True,
+            post_active=slug,
+            picks=saved_picks(record),
+        )
 
     @app.post("/posts/{slug}/edit")
     async def save_post_brief(slug: str, request: Request) -> Response:
         post_or_404(slug)
         if writing_now(slug):
             raise HTTPException(409, "the model is writing this post right now; cancel that first")
-        values = await _form(request)
+        values, lists = await _form_with_lists(request)
         values.pop("action", None)
+        picks = {
+            "outline": only_known(lists["models_outline"]),
+            "write": only_known(lists["models_write"]),
+        }
         try:
             brief = normalize_brief(values)
         except BriefError as exc:
             return brief_page(
-                values, f"/posts/{slug}/edit", str(exc), existing=True, post_active=slug, status=400
+                values,
+                f"/posts/{slug}/edit",
+                str(exc),
+                existing=True,
+                post_active=slug,
+                status=400,
+                picks=picks,
             )
         store.update_post(slug, brief=brief, title=brief["topic"])
+        if picks["outline"] or picks["write"]:
+            store.update_post(slug, models={k: v for k, v in picks.items() if v})
         store.save_blog_voice({k: brief[k] for k in VOICE_FIELDS})
         return RedirectResponse(f"/posts/{slug}", status_code=303)
 
     @app.post("/posts/{slug}/outline")
-    def suggest_outline(slug: str, model: Annotated[str, Form()] = "") -> RedirectResponse:
+    def suggest_outline(
+        slug: str,
+        model: Annotated[str, Form()] = "",
+        models: Annotated[list[str] | None, Form()] = None,
+    ) -> RedirectResponse:
         post_or_404(slug)
-        start_job(slug, "outline", model)
+        start_job(slug, "outline", [*(models or []), *([model] if model else [])])
         return RedirectResponse(f"/posts/{slug}", status_code=303)
 
     @app.post("/posts/{slug}/voices")
     def try_voices(slug: str, model: Annotated[str, Form()] = "") -> RedirectResponse:
         post_or_404(slug)
-        start_job(slug, "voices", model)
+        start_job(slug, "voices", [model] if model else [])
         return RedirectResponse(f"/posts/{slug}", status_code=303)
 
     @app.post("/posts/{slug}/voice")
@@ -393,6 +501,7 @@ def create_app(
     def write_post(
         slug: str,
         model: Annotated[str, Form()] = "",
+        models: Annotated[list[str] | None, Form()] = None,
         outline: Annotated[str | None, Form()] = None,
     ) -> RedirectResponse:
         post_or_404(slug)
@@ -403,7 +512,78 @@ def create_app(
                     400, f"the outline is longer than {LIMITS['outline']:,} characters"
                 )
             store.update_post(slug, outline=outline)
-        start_job(slug, "write", model)
+        start_job(slug, "write", [*(models or []), *([model] if model else [])])
+        return RedirectResponse(f"/posts/{slug}", status_code=303)
+
+    @app.post("/posts/{slug}/gather")
+    async def gather_parts(slug: str, request: Request) -> RedirectResponse:
+        """Add the parts picked from the models' answers to the outline or post being built."""
+        record = post_or_404(slug)
+        if writing_now(slug):
+            raise HTTPException(409, "the model is writing this post right now; cancel that first")
+        form = await request.form()
+        kind, grain = str(form.get("kind", "")), str(form.get("grain", "paragraph"))
+        if kind not in {"outline", "write"} or grain not in GRAINS:
+            raise HTTPException(400, "unknown step")
+        picks = [v for v in form.getlist("pick") if isinstance(v, str)]
+        field = "outline" if kind == "outline" else "post"
+        try:
+            text = gather(record.get("candidates"), str(record.get(field, "")), kind, grain, picks)
+        except BriefError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        limit = LIMITS["outline"] if kind == "outline" else POST_LIMIT
+        if len(text) > limit:
+            raise HTTPException(400, f"the {field} would be longer than {limit:,} characters")
+        save_working(slug, record, kind, text)
+        return RedirectResponse(f"/posts/{slug}?grain={grain}#build-{kind}", status_code=303)
+
+    def save_working(slug: str, record: dict[str, object], kind: str, text: str) -> None:
+        """Keep the outline or post a person built, and look it over again if it is the post."""
+        if kind == "outline":
+            fields: dict[str, object] = {"outline": text}
+            if text and record.get("stage") == "brief":
+                fields["stage"] = "outline"
+        elif not text:
+            fields = {
+                "post": "",
+                "checks": [],
+                "flags": [],
+                "stage": "outline" if record.get("outline") else "brief",
+            }
+        else:
+            try:
+                checks, flags = review_post(record, text)
+            except BriefError:
+                checks, flags = [], []
+            fields = {
+                "post": text,
+                "checks": checks,
+                "flags": flags,
+                "stage": "done",
+                "model": "picks",
+            }
+        store.update_post(slug, **fields)
+
+    @app.post("/posts/{slug}/post/save")
+    def save_post_text(slug: str, post: Annotated[str, Form()] = "") -> RedirectResponse:
+        record = post_or_404(slug)
+        if writing_now(slug):
+            raise HTTPException(409, "the model is writing this post right now; cancel that first")
+        text = _lf(post).strip()
+        if len(text) > POST_LIMIT:
+            raise HTTPException(400, f"the post is longer than {POST_LIMIT:,} characters")
+        save_working(slug, record, "write", text)
+        return RedirectResponse(f"/posts/{slug}#build-write", status_code=303)
+
+    @app.post("/posts/{slug}/candidates/clear")
+    def clear_candidates(slug: str, kind: Annotated[str, Form()] = "") -> RedirectResponse:
+        record = post_or_404(slug)
+        if writing_now(slug):
+            raise HTTPException(409, "the model is writing this post right now; cancel that first")
+        found = record.get("candidates")
+        if kind not in {"outline", "write"} or not isinstance(found, dict):
+            raise HTTPException(400, "unknown step")
+        store.update_post(slug, candidates={k: v for k, v in found.items() if k != kind})
         return RedirectResponse(f"/posts/{slug}", status_code=303)
 
     @app.post("/posts/{slug}/cancel")
