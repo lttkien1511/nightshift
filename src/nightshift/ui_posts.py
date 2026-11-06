@@ -31,23 +31,58 @@ def esc(value: object) -> str:
     return html.escape(str(value), quote=True)
 
 
-def posts_section(posts: Sequence[PostItem], active: str, running: str) -> str:
-    items = []
+SIDE_LIMIT = 8
+
+
+def side_row(href: str, label: str, state: str, title: str, current: bool, query: str) -> str:
+    """One line of the sidebar: a dot for the state and the name, cut short if it is long."""
+    page = ' aria-current="page"' if current else ""
+    return (
+        f'<li data-q="{esc(query.lower())}"><a href="{esc(href)}"{page} title="{esc(title)}">'
+        f'<i class="dot {esc(state)}" role="img" aria-label="{esc(state)}"></i>'
+        f'<span class="t">{esc(label)}</span></a></li>'
+    )
+
+
+def side_group(name: str, title: str, rows: Sequence[tuple[str, bool]], empty: str) -> str:
+    """A group that can be folded. Only the newest rows show; the rest sit behind "Show all"."""
+    shown, rest = rows[:SIDE_LIMIT], rows[SIDE_LIMIT:]
+    listing = "".join(row for row, _ in shown) or f'<li class="empty">{esc(empty)}</li>'
+    more = ""
+    if rest:
+        opened = " open" if any(current for _, current in rest) else ""
+        more = (
+            f'<details class="rest"{opened}><summary>'
+            f'<span class="s-closed">Show all ({len(rows)})</span>'
+            '<span class="s-open">Show fewer</span></summary>'
+            f'<ul class="queue">{"".join(row for row, _ in rest)}</ul></details>'
+        )
+    return (
+        f'<details class="group" data-group="{esc(name)}" open><summary>{esc(title)} '
+        f'<span class="count">{len(rows)}</span></summary>'
+        f'<ul class="queue">{listing}</ul>{more}</details>'
+    )
+
+
+def posts_group(posts: Sequence[PostItem], active: str, running: str) -> str:
+    rows = []
     for item in posts:
         state = "writing" if item.slug == running else item.stage
         label = "writing" if state == "writing" else STAGE_LABEL.get(state, state)
-        current = ' aria-current="page"' if item.slug == active else ""
-        items.append(
-            f'<li><a href="/posts/{esc(item.slug)}"{current}>'
-            f'<span class="t">{esc(item.title)}</span>'
-            f'<span class="badge {esc(state)}">{esc(label)}</span></a></li>'
+        rows.append(
+            (
+                side_row(
+                    f"/posts/{item.slug}",
+                    item.title,
+                    state,
+                    f"{item.title} · {label}",
+                    item.slug == active,
+                    f"{item.title} {item.slug}",
+                ),
+                item.slug == active,
+            )
         )
-    listing = "".join(items) or '<li class="empty">No blog posts yet.</li>'
-    return (
-        '<h2 class="sidehead">Blog posts</h2>'
-        '<a class="new-draft alt" href="/posts/new">New blog post</a>'
-        f'<ul class="queue posts">{listing}</ul>'
-    )
+    return side_group("posts", "Blog posts", rows, "No blog posts yet.")
 
 
 def _spans(text: str, flags: object) -> list[tuple[int, int]]:

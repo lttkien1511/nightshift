@@ -12,7 +12,7 @@ from .composer import PostRun
 from .diffing import word_diff
 from .runner import RunState
 from .storage import Draft, PostItem, digest, model_file
-from .ui_posts import posts_section
+from .ui_posts import posts_group, side_group, side_row
 
 SHOW_MODES = ("changed", "rejected", "all")
 LABELS = {
@@ -97,19 +97,38 @@ def _sidebar(
     post_active: str = "",
     post_running: str = "",
 ) -> str:
-    items = []
+    rows = []
     for d in drafts:
         state = "editing" if d.slug == running else ("ready" if d.has_results else "waiting")
-        current = ' aria-current="page"' if d.slug == active else ""
-        items.append(
-            f'<li><a href="/drafts/{esc(d.slug)}"{current}><span class="t">{esc(d.slug)}</span>'
-            f'<span class="m">{d.size:,} bytes</span>'
-            f'<span class="badge {state}">{state}</span></a></li>'
+        rows.append(
+            (
+                side_row(
+                    f"/drafts/{d.slug}",
+                    d.slug,
+                    state,
+                    f"{d.slug} · {d.size:,} bytes · {state}",
+                    d.slug == active,
+                    d.slug,
+                ),
+                d.slug == active,
+            )
         )
-    listing = "".join(items) or '<li class="empty">No drafts yet.</li>'
     note = '<p class="note">The queue is full. Delete a draft to add another.</p>' if full else ""
-    first = f'<a class="new-draft" href="/">New draft</a>{note}<ul class="queue">{listing}</ul>'
-    return first + posts_section(posts, post_active, post_running)
+    # The search box is switched on by the script; without it the lists are still complete.
+    finder = (
+        '<div class="finder" hidden><input type="search" id="find" autocomplete="off" '
+        'placeholder="Search drafts and posts" aria-label="Search drafts and posts">'
+        '<p class="note" id="nomatch" hidden>Nothing matches.</p></div>'
+        if len(drafts) + len(posts) >= 5
+        else ""
+    )
+    return (
+        '<div class="newrow"><a class="new-draft" href="/">New draft</a>'
+        '<a class="new-draft alt" href="/posts/new">New blog post</a></div>'
+        f"{note}{finder}"
+        + side_group("drafts", "Drafts", rows, "No drafts yet.")
+        + posts_group(posts, post_active, post_running)
+    )
 
 
 def page(

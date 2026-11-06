@@ -1,4 +1,6 @@
+import os
 import re
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -57,10 +59,10 @@ def test_sidebar_lists_drafts_with_state_and_marks_the_open_one(client):
     client.post("/drafts", data={"name": "one", "text": "Đoạn ngắn.\n"})
     client.post("/drafts", data={"name": "two", "text": "Đoạn hai.\n"})
     page = client.get("/drafts/one").text
-    assert page.count('<ul class="queue">') == 1
+    assert page.count('<ul class="queue">') == 2  # drafts and blog posts
     assert 'href="/drafts/one" aria-current="page"' in page
-    assert 'href="/drafts/two"><' in page
-    assert '<span class="badge waiting">waiting</span>' in page
+    assert 'href="/drafts/two" title="two' in page
+    assert '<i class="dot waiting"' in page and 'aria-label="waiting"' in page
     assert "The queue is full" in page
 
 
@@ -100,3 +102,67 @@ def test_monitor_link_comes_from_the_environment(tmp_path, monkeypatch):
 def test_delete_asks_for_confirmation_in_the_page(client):
     client.post("/drafts", data={"name": "x", "text": "Đoạn.\n"})
     assert "data-confirm=" in client.get("/drafts/x").text
+
+
+def make_app(tmp_path, drafts=0, posts=0):
+    store = Store(tmp_path, max_queue=60)
+    app = TestClient(create_app(store))
+    for number in range(drafts):
+        store.save(f"draft-{number:02d}", "x")
+        os.utime(store.inbox / f"draft-{number:02d}.md", ns=(10**9 * (number + 1),) * 2)
+    for number in range(posts):
+        store.create_post(f"Bài {number}", {"topic": f"Bài {number}"})
+    return app, store
+
+
+def test_the_sidebar_shows_the_newest_eight_and_folds_the_rest_away(tmp_path):
+    app, _ = make_app(tmp_path, drafts=12)
+    page = app.get("/").text
+    side = page[page.index('<aside class="side">') : page.index("</aside>")]
+    assert 'Drafts <span class="count">12</span>' in side
+    assert "Show all (12)" in side and "Show fewer" in side
+    top, rest = side.split('<details class="rest"')
+    assert top.index("draft-11") < top.index("draft-04") and "draft-03" not in top
+    assert "draft-03" in rest and "draft-00" in rest and " open" not in rest.split(">")[0]
+
+
+def test_the_open_draft_keeps_its_folded_list_open(tmp_path):
+    app, _ = make_app(tmp_path, drafts=12)
+    side = app.get("/drafts/draft-00").text
+    assert '<details class="rest" open>' in side
+    assert '<details class="rest" open>' not in app.get("/drafts/draft-11").text
+
+
+def test_rows_are_one_line_with_the_details_in_a_tooltip(tmp_path):
+    app, _ = make_app(tmp_path, drafts=1)
+    page = app.get("/").text
+    assert 'title="draft-00 \u00b7 1 bytes \u00b7 waiting"' in page
+    assert '<span class="t">draft-00</span>' in page and 'class="m"' not in page
+    assert 'data-q="draft-00"' in page
+
+
+def test_the_search_box_is_there_only_when_there_is_something_to_search(tmp_path):
+    few, _ = make_app(tmp_path / "few", drafts=2, posts=2)
+    assert 'id="find"' not in few.get("/").text
+    many, _ = make_app(tmp_path / "many", drafts=3, posts=2)
+    page = many.get("/").text
+    assert 'class="finder" hidden' in page and 'id="find"' in page and 'id="nomatch"' in page
+    assert "Search drafts and posts" in page
+    assert 'data-q="bài 0 bai-0"' in page
+
+
+def test_the_two_new_buttons_sit_side_by_side_above_the_groups(tmp_path):
+    app, _ = make_app(tmp_path)
+    page = app.get("/").text
+    row = page[page.index('<div class="newrow">') : page.index("</div>", page.index("newrow"))]
+    assert 'href="/"' in row and 'href="/posts/new"' in row
+    assert (
+        page.index("newrow") < page.index('data-group="drafts"') < page.index('data-group="posts"')
+    )
+    assert "No drafts yet." in page and "No blog posts yet." in page
+
+
+def test_the_script_folds_groups_and_filters_rows():
+    script = (Path(__file__).parent.parent / "src/nightshift/static/ui.js").read_text("utf-8")
+    assert "nightshift-groups" in script and 'getElementById("find")' in script
+    assert "data-q" in script and "Escape" in script

@@ -76,6 +76,7 @@ class Draft:
     slug: str
     size: int
     has_results: bool
+    modified: int = 0  # nanoseconds, to list the newest first
 
 
 MAX_POSTS = 20
@@ -91,6 +92,7 @@ class PostItem:
     slug: str
     title: str
     stage: str
+    updated: str = ""
 
 
 @dataclass(frozen=True)
@@ -123,9 +125,13 @@ class Store:
             if record is not None:
                 found.append(
                     PostItem(
-                        path.stem, str(record.get("title", path.stem)), str(record.get("stage", ""))
+                        path.stem,
+                        str(record.get("title", path.stem)),
+                        str(record.get("stage", "")),
+                        str(record.get("updated", "")),
                     )
                 )
+        found.sort(key=lambda post: post.updated, reverse=True)  # stable: ties stay by name
         return found
 
     @property
@@ -302,5 +308,7 @@ class Store:
         for path in sorted(self.inbox.glob("*.md")):
             results = self.outbox / path.stem
             has_results = results.is_dir() and any(results.iterdir())
-            found.append(Draft(slug=path.stem, size=path.stat().st_size, has_results=has_results))
+            info = path.stat()
+            found.append(Draft(path.stem, info.st_size, has_results, info.st_mtime_ns))
+        found.sort(key=lambda draft: draft.modified, reverse=True)  # stable: ties stay by name
         return found

@@ -72,8 +72,6 @@ h1{font-size:1.5rem;margin:0 0 .6rem;line-height:1.25}
 .queue a:hover{border-color:var(--accent-ink)}
 .queue a[aria-current="page"]{border-color:var(--accent-ink);box-shadow:inset 3px 0 0 var(--accent-ink)}
 .queue .t{font-weight:600;overflow-wrap:anywhere}
-.queue .m{grid-column:1;font-size:.78rem;color:var(--muted)}
-.queue .badge{grid-row:1/3;grid-column:2;align-self:center}
 .queue .empty{color:var(--muted);font-size:.9rem;padding:.4rem .2rem}
 
 .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:1rem 1.2rem;margin:0 0 1rem}
@@ -150,9 +148,7 @@ main,.side{min-width:0}
 .btn{display:inline-block;padding:.45rem .9rem;border:1px solid var(--line);border-radius:8px;background:var(--panel);color:var(--text);text-decoration:none;font:inherit;cursor:pointer}
 .btn:hover{border-color:var(--accent-ink)}
 .titlebtns{display:flex;gap:.5rem;flex:none}
-.sidehead{font-size:.8rem;letter-spacing:.05em;text-transform:uppercase;color:var(--muted);margin:1.4rem 0 .5rem}
 .new-draft.alt{background:var(--soft);color:var(--text)}
-.queue.posts .t{grid-column:1}
 .grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(14rem,1fr));gap:0 1rem}
 .card label select{display:block;width:100%;margin-top:.3rem}
 label.inline select{width:auto;margin:0}
@@ -199,3 +195,27 @@ form + .runform{margin-top:.8rem}
 details.edit{margin:.8rem 0}
 details.edit summary{cursor:pointer;font-weight:600}
 details.edit textarea{margin-top:.6rem}
+.newrow{display:grid;grid-template-columns:1fr 1fr;gap:.4rem}
+.newrow .new-draft{padding:.45rem .3rem;font-size:.9rem}
+.finder{margin:.6rem 0 0}
+.finder input{width:100%;padding:.4rem .6rem;border-radius:8px;border:1px solid var(--line);background:var(--panel);color:var(--text);font:inherit;font-size:.9rem}
+details.group{margin-top:.9rem}
+details.group>summary{cursor:pointer;display:flex;align-items:center;gap:.4rem;list-style:none;font-size:.8rem;letter-spacing:.05em;text-transform:uppercase;color:var(--muted)}
+details.group>summary::-webkit-details-marker{display:none}
+details.group>summary::before{content:"\25be"}
+details.group:not([open])>summary::before{content:"\25b8"}
+.count{font-size:.72rem;letter-spacing:0;border:1px solid var(--line);border-radius:999px;padding:0 .45rem}
+.queue{margin:.4rem 0 0;gap:.12rem}
+.queue a{display:flex;align-items:center;gap:.55rem;padding:.38rem .6rem;border:1px solid transparent;border-radius:7px;background:transparent}
+.queue a:hover{background:var(--panel);border-color:var(--line)}
+.queue a[aria-current="page"]{background:var(--panel);border-color:var(--accent-ink)}
+.queue .t{flex:1;min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;font-size:.9rem;font-weight:500}
+.dot{flex:none;width:.55rem;height:.55rem;border-radius:50%;background:currentColor}
+.dot.ready,.dot.done{color:var(--ok)}
+.dot.waiting,.dot.brief,.dot.outline{color:var(--muted)}
+.dot.editing,.dot.writing{color:var(--run)}
+details.rest>summary{cursor:pointer;font-size:.82rem;color:var(--muted);padding:.3rem .6rem;margin-top:.15rem}
+details.rest:not([open]) .s-open,details.rest[open] .s-closed{display:none}
+.queue{grid-template-columns:minmax(0,1fr)}
+.queue li{min-width:0}
+.queue a{padding:.3rem .6rem}

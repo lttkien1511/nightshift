@@ -213,7 +213,7 @@ def test_progress_and_live_text_while_writing(client, composer, script):
     page = client.get(f"/posts/{slug}").text
     assert "Writing the post with m1" in page and '<pre class="pstream">' in page
     assert '<meta http-equiv="refresh" content="3">' in page and f"/posts/{slug}/cancel" in page
-    assert '<span class="badge writing">writing</span>' in page and "writing go-rancher" in page
+    assert '<i class="dot writing"' in page and "writing go-rancher" in page
     assert "Suggest an outline" not in page
     state = client.get(f"/posts/{slug}/run.json").json()
     assert state["state"] == "running" and state["kind"] == "write" and state["chars"] > 0

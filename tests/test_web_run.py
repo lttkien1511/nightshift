@@ -69,7 +69,7 @@ def test_run_shows_progress_reloads_itself_and_then_the_result(client, runner, g
     assert "Editing with m2" in page and "<progress" in page
     assert '<meta http-equiv="refresh" content="3">' in page
     assert "Run now" not in page and "/drafts/a/cancel" in page
-    assert '<span class="badge editing">editing</span>' in page
+    assert '<i class="dot editing"' in page
     assert "editing a 0/2" in page
     gate.open.set()
     runner.wait()

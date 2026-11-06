@@ -85,3 +85,22 @@ def test_delete_removes_the_draft_and_its_results(store):
 def test_no_temporary_files_are_left_behind(store):
     store.save("a", "one")
     assert sorted(p.name for p in store.inbox.iterdir()) == ["a.md"]
+
+
+def test_drafts_and_posts_are_listed_newest_first(store):
+    import os
+
+    store = Store(store.root, max_queue=10)
+    for number, name in enumerate(("old", "mid", "new"), start=1):
+        store.save(name, "x")
+        path = store.inbox / f"{name}.md"
+        os.utime(path, ns=(number * 10**9, number * 10**9))
+    assert [d.slug for d in store.drafts()] == ["new", "mid", "old"]
+    store.save("old", "again")
+    assert [d.slug for d in store.drafts()][0] == "old" and store.drafts()[0].modified > 3 * 10**9
+    first = store.create_post("Một", {"topic": "Một"})
+    second = store.create_post("Hai", {"topic": "Hai"})
+    record = store.post(first)
+    store._write_post(first, {**record, "updated": "2099-01-01T00:00:00+00:00"})
+    assert [p.slug for p in store.posts()] == [first, second]
+    assert store.posts()[0].updated.startswith("2099")

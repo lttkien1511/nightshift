@@ -90,6 +90,46 @@
       }
     }
 
+    var GROUPS = "nightshift-groups";
+    var folded = {};
+    try { folded = JSON.parse(localStorage.getItem(GROUPS) || "{}") || {}; } catch (err) { folded = {}; }
+    var groups = document.querySelectorAll("details.group");
+    var watch = function (group) {
+      var name = group.getAttribute("data-group");
+      if (folded[name] === false && !group.querySelector("[aria-current]")) group.open = false;
+      group.addEventListener("toggle", function () {
+        folded[name] = group.open;
+        try { localStorage.setItem(GROUPS, JSON.stringify(folded)); } catch (err) { /* storage may be blocked */ }
+      });
+    };
+    for (var g = 0; g < groups.length; g++) watch(groups[g]);
+
+    var finder = document.getElementById("find");
+    if (finder) {
+      finder.parentNode.hidden = false;
+      var items = document.querySelectorAll(".side li[data-q]");
+      var rests = document.querySelectorAll(".side details.rest");
+      var none = document.getElementById("nomatch");
+      var search = function () {
+        var q = finder.value.trim().toLowerCase();
+        var found = 0;
+        for (var i2 = 0; i2 < items.length; i2++) {
+          var hit = q === "" || items[i2].getAttribute("data-q").indexOf(q) >= 0;
+          items[i2].hidden = !hit;
+          if (hit) found++;
+        }
+        if (q !== "") {
+          for (var r = 0; r < rests.length; r++) rests[r].open = true;
+          for (var s = 0; s < groups.length; s++) groups[s].open = true;
+        }
+        if (none) none.hidden = q === "" || found > 0;
+      };
+      finder.addEventListener("input", search);
+      finder.addEventListener("keydown", function (e) {
+        if (e.key === "Escape") { finder.value = ""; search(); }
+      });
+    }
+
     var merge = document.getElementById("merge");
     if (merge) {
       var boxes = merge.querySelectorAll("input[name=keep]");
