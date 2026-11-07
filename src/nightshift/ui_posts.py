@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import html
 from collections.abc import Mapping, Sequence
+from datetime import datetime
 from typing import Any
 
 from .compose import LENGTHS, LIMITS, POST_LIMIT, TONES, pieces, uncovered_points
@@ -29,6 +30,14 @@ HUMOR_LABEL = {"none": "None", "light": "A little", "playful": "Playful"}
 
 def esc(value: object) -> str:
     return html.escape(str(value), quote=True)
+
+
+def sent_to_dev_note(record: Mapping[str, Any]) -> str:
+    sent = record.get("sent_to_dev")
+    if not sent:
+        return ""
+    when = datetime.fromtimestamp(float(sent)).strftime("%H:%M %d/%m")
+    return f'<p class="hint">Đã gửi sang Portfolio Dev lúc {esc(when)}.</p>'
 
 
 SIDE_LIMIT = 8
@@ -597,6 +606,9 @@ def _post_card(
         f'<a class="btn" href="{base}/post.md">Download .md</a>'
         f'<form class="inline" method="post" action="{base}/to-draft">'
         '<button class="secondary">Save as a draft to polish</button></form>'
+        f'<form class="inline" method="post" action="{base}/send-to-dev">'
+        '<button class="secondary">Send to Portfolio Dev</button></form>'
+        f"{sent_to_dev_note(record)}"
         f"{again}</div>{ideas}</section>"
     )
 
