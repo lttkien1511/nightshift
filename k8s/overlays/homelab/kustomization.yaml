@@ -4,7 +4,7 @@ resources:
   - ../../base
 images:
   - name: ghcr.io/lttkien1511/nightshift
-    newTag: sha-84a8fd3
+    newTag: sha-a0d192d
 patches:
   - target:
       kind: Ingress
