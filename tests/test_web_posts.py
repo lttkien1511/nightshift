@@ -1,4 +1,7 @@
+import io
+import json
 import threading
+import urllib.error
 
 import pytest
 from fastapi.testclient import TestClient
@@ -651,3 +654,87 @@ def test_blog_models_come_from_the_environment_or_from_ollama(store, monkeypatch
     assert composer_from_env(store, Gate()).models == ["a"]
     monkeypatch.setenv("NIGHTSHIFT_POST_MODELS", "x, y")
     assert composer_from_env(store, Gate()).models == ["x", "y"]
+
+
+# --- sending a finished post to the portfolio's blog admin ---------------------------------------
+
+
+class FakeReply:
+    def __init__(self, body):
+        self.body = body
+
+    def read(self):
+        return self.body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+def finished(client, store):
+    create(client)
+    slug = "go-rancher-khoi-k3s"
+    store.update_post(slug, post="# Gỡ Rancher\n\nNội dung bài.", stage="done")
+    return slug
+
+
+def test_sending_to_the_portfolio_is_closed_until_it_is_configured(client, store, monkeypatch):
+    monkeypatch.delenv("NIGHTSHIFT_PORTFOLIO_DEV_URL", raising=False)
+    monkeypatch.delenv("NIGHTSHIFT_PORTFOLIO_DEV_TOKEN", raising=False)
+    slug = finished(client, store)
+    assert client.post(f"/posts/{slug}/send-to-dev").status_code == 503
+
+
+def test_a_post_that_is_not_written_cannot_be_sent(client, store, monkeypatch):
+    monkeypatch.setenv("NIGHTSHIFT_PORTFOLIO_DEV_URL", "http://portfolio/admin/api/blog/incoming")
+    monkeypatch.setenv("NIGHTSHIFT_PORTFOLIO_DEV_TOKEN", "t")
+    create(client)
+    assert client.post("/posts/go-rancher-khoi-k3s/send-to-dev").status_code == 400
+    assert client.post("/posts/nope/send-to-dev").status_code == 404
+
+
+def test_the_post_is_sent_as_a_draft_with_the_shared_token(client, store, monkeypatch):
+    monkeypatch.setenv("NIGHTSHIFT_PORTFOLIO_DEV_URL", "http://portfolio/admin/api/blog/incoming")
+    monkeypatch.setenv("NIGHTSHIFT_PORTFOLIO_DEV_TOKEN", "shared-secret")
+    seen = {}
+
+    def fake(request, timeout):
+        seen["url"] = request.full_url
+        seen["token"] = request.get_header("X-ingest-token")
+        seen["body"] = json.loads(request.data)
+        return FakeReply(b'{"post": {"slug": "go-rancher"}}')
+
+    monkeypatch.setattr("nightshift.web.urllib.request.urlopen", fake)
+    slug = finished(client, store)
+    assert client.get(f"/posts/{slug}").text.count("Send to Portfolio Dev") == 1
+    reply = client.post(f"/posts/{slug}/send-to-dev", follow_redirects=False)
+    assert reply.status_code == 303 and reply.headers["location"] == f"/posts/{slug}"
+    assert seen["url"] == "http://portfolio/admin/api/blog/incoming"
+    assert seen["token"] == "shared-secret"
+    assert seen["body"]["markdown"].startswith("# Gỡ Rancher") and seen["body"]["title"]
+    record = store.post(slug)
+    assert record["sent_to_dev_slug"] == "go-rancher" and record["sent_to_dev"] > 0
+    assert "Sent to Portfolio Dev as a draft" in client.get(f"/posts/{slug}").text
+
+
+def test_a_refusal_or_an_unreachable_portfolio_is_reported_not_recorded(client, store, monkeypatch):
+    monkeypatch.setenv("NIGHTSHIFT_PORTFOLIO_DEV_URL", "http://portfolio/admin/api/blog/incoming")
+    monkeypatch.setenv("NIGHTSHIFT_PORTFOLIO_DEV_TOKEN", "shared-secret")
+    slug = finished(client, store)
+
+    def refuse(request, timeout):
+        raise urllib.error.HTTPError(request.full_url, 403, "no", {}, io.BytesIO(b"bad token"))
+
+    monkeypatch.setattr("nightshift.web.urllib.request.urlopen", refuse)
+    reply = client.post(f"/posts/{slug}/send-to-dev")
+    assert reply.status_code == 502 and "403" in reply.text and "bad token" in reply.text
+
+    def down(request, timeout):
+        raise urllib.error.URLError("connection refused")
+
+    monkeypatch.setattr("nightshift.web.urllib.request.urlopen", down)
+    reply = client.post(f"/posts/{slug}/send-to-dev")
+    assert reply.status_code == 502 and "connection refused" in reply.text
+    assert "sent_to_dev" not in store.post(slug)
