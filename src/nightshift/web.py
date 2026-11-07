@@ -3,11 +3,8 @@
 from __future__ import annotations
 
 import contextlib
-import json
 import os
 import time
-import urllib.error
-import urllib.request
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Annotated
@@ -632,38 +629,6 @@ def create_app(
         except StorageError as exc:
             raise HTTPException(400, str(exc)) from exc
         return RedirectResponse(f"/drafts/{new_slug}", status_code=303)
-
-    @app.post("/posts/{slug}/send-to-dev")
-    def send_to_dev(slug: str) -> RedirectResponse:
-        """Push the finished post to portfolio-dev as a new draft blog post,
-        so Kien can tweak images and copy there before anything goes public.
-        A direct in-cluster call (ClusterIP, not the public hostname) guarded
-        by a shared token - see NIGHTSHIFT_PORTFOLIO_DEV_URL/_TOKEN."""
-        record = post_or_404(slug)
-        text = str(record.get("post", ""))
-        if not text:
-            raise HTTPException(400, "this post has not been written yet")
-        url = os.environ.get("NIGHTSHIFT_PORTFOLIO_DEV_URL", "")
-        token = os.environ.get("NIGHTSHIFT_PORTFOLIO_DEV_TOKEN", "")
-        if not url or not token:
-            raise HTTPException(503, "portfolio-dev integration is not configured")
-        title = str(record.get("title", slug))
-        payload = json.dumps({"title": title, "markdown": text}).encode("utf-8")
-        req = urllib.request.Request(
-            url, data=payload, method="POST",
-            headers={"Content-Type": "application/json", "X-Ingest-Token": token},
-        )
-        try:
-            with urllib.request.urlopen(req, timeout=10) as resp:
-                body = json.loads(resp.read().decode("utf-8"))
-        except urllib.error.HTTPError as exc:
-            detail = exc.read().decode("utf-8", "replace")[:300]
-            raise HTTPException(502, f"portfolio-dev refused it ({exc.code}): {detail}") from exc
-        except urllib.error.URLError as exc:
-            raise HTTPException(502, f"could not reach portfolio-dev: {exc.reason}") from exc
-        dev_slug = body.get("post", {}).get("slug", "")
-        store.update_post(slug, sent_to_dev=time.time(), sent_to_dev_slug=dev_slug)
-        return RedirectResponse(f"/posts/{slug}", status_code=303)
 
     @app.get("/posts/{slug}/run.json")
     def post_state(slug: str) -> dict[str, object]:

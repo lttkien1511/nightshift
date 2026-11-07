@@ -28,29 +28,3 @@ spec:
               app.kubernetes.io/name: traefik
       ports:
         - port: 8080
----
-# "Send to Portfolio Dev" button: lets the web pod reach portfolio-dev's
-# admin Service directly (ClusterIP, no Traefik hop). dev-only destination
-# on purpose - this policy names portfolio-dev specifically, never portfolio
-# (prod), so Nightshift has no path to push straight to the public site.
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: allow-web-to-portfolio-dev
-  namespace: nightshift
-spec:
-  podSelector:
-    matchLabels:
-      app.kubernetes.io/name: nightshift
-      app.kubernetes.io/component: web
-  policyTypes: [Egress]
-  egress:
-    - to:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: portfolio-dev
-          podSelector:
-            matchLabels:
-              app.kubernetes.io/name: portfolio-admin
-      ports:
-        - port: 8080

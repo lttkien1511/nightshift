@@ -51,21 +51,6 @@ spec:
             # Models offered by the Run now button (the nightly CronJob has its own list).
             - name: NIGHTSHIFT_RUN_MODELS
               value: qwen2.5:7b
-            # "Send to Portfolio Dev" button on a finished post (stage=done).
-            # In-cluster ClusterIP, not the public hostname: this call never
-            # leaves the cluster and never goes through Traefik/basicAuth.
-            - name: NIGHTSHIFT_PORTFOLIO_DEV_URL
-              value: http://portfolio-admin.portfolio-dev.svc.cluster.local/admin/api/blog/incoming
-            # Shared secret with portfolio-dev's BLOG_INGEST_TOKEN. Secret
-            # created by hand, same value on both sides, never in Git.
-            # Missing Secret -> empty value -> the button's POST gets a 403
-            # from the portfolio side, which the UI surfaces as an error.
-            - name: NIGHTSHIFT_PORTFOLIO_DEV_TOKEN
-              valueFrom:
-                secretKeyRef:
-                  name: nightshift-portfolio-dev
-                  key: token
-                  optional: true
           readinessProbe:
             httpGet:
               path: /healthz
