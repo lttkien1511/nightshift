@@ -356,6 +356,16 @@ def _run_card(slug: str, run: PostRun | None, now: float) -> str:
         )
     if run.slug != slug:
         return ""
+    if run.running and run.resting_until > now:
+        return (
+            '<section class="card runcard" aria-live="polite"><div class="runhead">'
+            f"<b>Resting before {esc(run.model)}{_turn(run)}</b>"
+            f'<span class="hint">{_elapsed(run.resting_until - now)} left</span></div>'
+            '<p class="hint">The machine rests between models, so it can cool down and free '
+            "its memory. The next model starts by itself.</p>"
+            f'<form method="post" action="{base}/cancel"><button>Cancel</button></form>'
+            "</section>"
+        )
     if run.running:
         what = {"outline": "outline", "voices": "three voices"}.get(run.kind, "post")
         shown = esc(run.partial) if run.partial else "Waiting for the first words..."

@@ -106,7 +106,8 @@ def composer_from_env(store: Store, gate: Gate) -> Composer:
 
         return stream
 
-    return Composer(store, make_stream, models, gate)
+    rest = float(os.environ.get("NIGHTSHIFT_MODEL_REST_SECONDS", "0") or 0)
+    return Composer(store, make_stream, models, gate, rest_seconds=rest)
 
 
 def _names(raw: str) -> list[str]:
@@ -678,6 +679,7 @@ def create_app(
             "kind": state.kind,
             "model": state.model,
             "chars": state.chars,
+            "resting_until": state.resting_until,
             "error": state.error,
         }
 

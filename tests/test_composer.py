@@ -1,6 +1,7 @@
 import io
 import json
 import threading
+import time
 import urllib.error
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -536,3 +537,62 @@ def test_the_models_ollama_has_are_listed_and_a_silent_ollama_gives_nothing(monk
 
     monkeypatch.setattr("urllib.request.urlopen", refuse)
     assert list_models("http://x") == []
+
+
+def wait_until(check, timeout=5.0):
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        if check():
+            return True
+        time.sleep(0.01)
+    return False
+
+
+def test_the_next_model_waits_for_its_rest_and_the_state_says_so(store, slug):
+    composer = composer_for(store, {"m1": OUT1, "m2": OUT2})
+    composer.rest_seconds = 0.4
+    composer.start(slug, "outline", models=["m1", "m2"], replace=False)
+    assert wait_until(lambda: composer.state.resting_until > 0)
+    resting = composer.state
+    assert resting.running and resting.model == "m2" and resting.position == 1
+    assert [c["model"] for c in store.post(slug)["candidates"]["outline"]] == ["m1"]
+    composer.wait()
+    done = composer.state
+    assert done.state == "done" and done.resting_until == 0.0
+    assert [c["model"] for c in store.post(slug)["candidates"]["outline"]] == ["m1", "m2"]
+
+
+def test_a_rest_follows_a_failed_model_too_and_never_comes_after_the_last(store, slug):
+    composer = composer_for(store, {"m1": RuntimeError("boom"), "m2": OUT2})
+    composer.rest_seconds = 0.3
+    began = time.monotonic()
+    composer.start(slug, "outline", models=["m1", "m2"], replace=False)
+    composer.wait()
+    assert time.monotonic() - began >= 0.3  # rested once, between the two models
+    assert time.monotonic() - began < 0.9  # not again after the last one
+    assert composer.state.state == "done"
+    single = composer_for(store, {"m1": OUT1})
+    single.rest_seconds = 5
+    single.start(slug, "outline", model="m1")
+    single.wait()
+    assert single.state.state == "done"  # one model: nothing to rest for
+
+
+def test_cancelling_during_a_rest_ends_the_job_without_running_the_next_model(store, slug):
+    ran = []
+
+    def make(model):
+        def stream(system, prompt, num_predict, on_text):
+            ran.append(model)
+            on_text(OUT1)
+            return OUT1
+
+        return stream
+
+    composer = Composer(store, make, ["m1", "m2"], Gate(), rest_seconds=30)
+    composer.start(slug, "outline", models=["m1", "m2"], replace=False)
+    assert wait_until(lambda: composer.state.resting_until > 0)
+    composer.cancel()
+    composer.wait(3)
+    assert composer.state.state == "cancelled" and ran == ["m1"]
+    assert composer.gate.holder is None

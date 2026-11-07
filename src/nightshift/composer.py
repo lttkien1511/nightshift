@@ -53,6 +53,7 @@ class PostRun:
     error: str = ""
     queue: tuple[str, ...] = ()  # every model of this job, in order
     position: int = 0  # which of them is running
+    resting_until: float = 0.0  # while resting before this model, when the rest ends
 
     @property
     def running(self) -> bool:
@@ -79,8 +80,10 @@ class Composer:
         models: Sequence[str] | Callable[[], Sequence[str]],
         gate: Gate,
         clock: Callable[[], float] = time.time,
+        rest_seconds: float = 0.0,
     ) -> None:
         self.store = store
+        self.rest_seconds = rest_seconds  # a pause after each model before the next
         self._models = models
         self.gate = gate
         self._make_stream = make_stream
@@ -178,6 +181,7 @@ class Composer:
         done = 0
         for position, model in enumerate(chosen):
             if position:
+                rest = max(self.rest_seconds, 0.0)
                 with self._lock:
                     self._raw = ""
                     self._state = PostRun(
@@ -188,7 +192,17 @@ class Composer:
                         self._clock(),
                         queue=tuple(chosen),
                         position=position,
+                        resting_until=self._clock() + rest if rest else 0.0,
                     )
+                if rest:
+                    if self._cancel.wait(rest):  # a cancel ends the rest at once
+                        self._finish("cancelled")
+                        return
+                    with self._lock:
+                        if self._state is not None:
+                            self._state = replace(
+                                self._state, started=self._clock(), resting_until=0.0
+                            )
             try:
                 outcome = self._run_one(slug, kind, model, inputs, replace_text)
             except Exception as exc:

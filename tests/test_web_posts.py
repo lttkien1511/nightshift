@@ -1,6 +1,7 @@
 import io
 import json
 import threading
+import time
 import urllib.error
 
 import pytest
@@ -738,3 +739,20 @@ def test_a_refusal_or_an_unreachable_portfolio_is_reported_not_recorded(client, 
     reply = client.post(f"/posts/{slug}/send-to-dev")
     assert reply.status_code == 502 and "connection refused" in reply.text
     assert "sent_to_dev" not in store.post(slug)
+
+
+def test_the_page_says_when_the_machine_is_resting_between_models(client, store, composer):
+    create(client)
+    slug = "go-rancher-khoi-k3s"
+    composer.rest_seconds = 30
+    client.post(f"/posts/{slug}/outline", data={"models": ["m1", "m2"]}, follow_redirects=False)
+    for _ in range(300):
+        if composer.state and composer.state.resting_until > 0:
+            break
+        time.sleep(0.01)
+    page = client.get(f"/posts/{slug}").text
+    assert "Resting before m2 (model 2 of 2)" in page and "left" in page
+    assert client.get(f"/posts/{slug}/run.json").json()["resting_until"] > 0
+    client.post(f"/posts/{slug}/cancel", follow_redirects=False)
+    composer.wait(3)
+    assert "Resting before" not in client.get(f"/posts/{slug}").text

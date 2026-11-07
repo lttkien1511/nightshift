@@ -51,6 +51,10 @@ spec:
             # Models offered by the Run now button (the nightly CronJob has its own list).
             - name: NIGHTSHIFT_RUN_MODELS
               value: qwen2.5:7b
+            # With several models picked for one blog step, rest this long after each one
+            # before the next starts (seconds). The machine cools and Ollama frees memory.
+            - name: NIGHTSHIFT_MODEL_REST_SECONDS
+              value: "300"
             # "Send to Portfolio Dev" button on a finished post (stage=done).
             # In-cluster ClusterIP, not the public hostname: this call never
             # leaves the cluster and never goes through Traefik/basicAuth.
