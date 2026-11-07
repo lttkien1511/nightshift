@@ -756,3 +756,19 @@ def test_the_page_says_when_the_machine_is_resting_between_models(client, store,
     client.post(f"/posts/{slug}/cancel", follow_redirects=False)
     composer.wait(3)
     assert "Resting before" not in client.get(f"/posts/{slug}").text
+
+
+def test_the_post_has_its_own_column_and_the_helpers_sit_beside_it(client, store):
+    slug = finished(client, store)
+    page = client.get(f"/posts/{slug}").text
+    left, right = page.split(chr(34) + "helpcol" + chr(34))
+    assert "ppost" in left and "ppost" not in right
+    assert "build-checks" in right and "The brief" in right
+    assert "Send to Portfolio Dev" in left
+
+
+def test_without_text_the_outline_takes_the_wide_column(client):
+    create(client)
+    page = client.get("/posts/go-rancher-khoi-k3s").text
+    left, right = page.split(chr(34) + "helpcol" + chr(34))
+    assert "build-outline" in left and "The brief" in right

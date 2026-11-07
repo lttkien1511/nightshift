@@ -427,7 +427,7 @@ def _candidates(slug: str, record: Mapping[str, Any], kind: str, grain: str) -> 
     if kind == "write":
         other = "paragraph" if grain == "sentence" else "sentence"
         toggle = (
-            f'<a class="grain" href="/posts/{esc(slug)}?grain={other}#build-write">'
+            f'<a class="grain" href="/posts/{esc(slug)}?grain={other}#build-ideas">'
             f"Show {other}s instead</a>"
         )
     else:
@@ -550,11 +550,13 @@ def _post_card(
     busy: bool,
     picks: Mapping[str, Sequence[str]],
     grain: str,
-) -> str:
+) -> tuple[str, str]:
+    """The post card (left column) and the checks and ideas that go beside it (right)."""
     post = str(record.get("post", ""))
-    ideas = "" if busy else _candidates(slug, record, "write", grain)
+    found = "" if busy else _candidates(slug, record, "write", grain)
+    ideas = f'<section class="card" id="build-ideas">{found}</section>' if found else ""
     if not post and not ideas:
-        return ""
+        return "", ""
     base = f"/posts/{esc(slug)}"
     checks = record.get("checks") or []
     count = len(_spans(post, record.get("flags")))
@@ -600,15 +602,19 @@ def _post_card(
     if not post:
         return (
             '<section class="card" id="build-write"><h2>The post</h2>'
-            '<p class="hint">Nothing is here yet. Tick parts below to build it, or write '
-            f"it yourself.</p>{editor}{ideas}</section>"
+            '<p class="hint">Nothing is here yet. Tick parts from the ideas to build it, or '
+            f"write it yourself.</p>{editor}</section>",
+            ideas,
         )
-    return (
+    checked = (
+        '<section class="card" id="build-checks"><h2>Checks</h2>'
+        '<p class="hint">These look for numbers and names the material does not contain, and '
+        "for anything that looks private. They are not a substitute for reading it.</p>"
+        f"{verdict}</section>"
+    )
+    written = (
         '<section class="card" id="build-write"><h2>The post</h2>'
-        f'<p class="hint">{byline} '
-        "These checks look for numbers and names the material does not contain, and for "
-        "anything that looks private. They are not a substitute for reading it.</p>"
-        f"{verdict}"
+        f'<p class="hint">{byline}</p>'
         f"{legend}"
         f'<div class="ppost">{marked(post, record.get("flags"))}</div>'
         f"{editor}"
@@ -619,8 +625,9 @@ def _post_card(
         f'<form class="inline" method="post" action="{base}/send-to-dev">'
         '<button class="secondary">Send to Portfolio Dev</button></form>'
         f"{sent_to_dev_note(record)}"
-        f"{again}</div>{ideas}</section>"
+        f"{again}</div></section>"
     )
+    return written, checked + ideas
 
 
 def post_main(
@@ -645,11 +652,16 @@ def post_main(
         f'<div class="titlebtns"><a class="btn" href="{base}/edit">Edit the brief</a>'
         f"{delete}</div></div>"
     )
+    written, beside = _post_card(slug, record, models, busy, chosen, grain)
+    voices = _voices_card(slug, record, models, busy)
+    outline = _outline_card(slug, record, models, busy, chosen, grain)
+    if str(record.get("post", "")):
+        left, right = written, beside + voices + outline
+    else:  # no text yet: the outline is the work in hand, so it takes the wide column
+        left, right = outline + written, beside + voices
     return (
         title
         + _run_card(slug, run, now)
-        + _post_card(slug, record, models, busy, chosen, grain)
-        + _voices_card(slug, record, models, busy)
-        + _outline_card(slug, record, models, busy, chosen, grain)
-        + _summary(record)
+        + f'<div class="postgrid"><div class="postcol">{left}</div>'
+        f'<div class="helpcol">{right}{_summary(record)}</div></div>'
     )
