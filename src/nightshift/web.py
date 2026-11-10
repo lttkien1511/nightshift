@@ -5,13 +5,14 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import re
 import time
 import urllib.error
 import urllib.request
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Annotated
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 from fastapi import FastAPI, Form, HTTPException, Request, Response
 from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse, RedirectResponse
@@ -323,13 +324,15 @@ def create_app(
         return RedirectResponse(f"/drafts/{slug}", status_code=303)
 
     @app.get("/drafts/{slug}", response_class=HTMLResponse)
-    def show_draft(slug: str, model: str = "", show: str = "changed") -> HTMLResponse:
+    def show_draft(
+        slug: str, model: str = "", show: str = "changed", sent: str = ""
+    ) -> HTMLResponse:
         text = store.read(slug)
         if text is None:
             raise HTTPException(404, "no such draft")
         panel = ui.run_panel(slug, runner.models, runner.state, time.time())
         main = ui.draft_main(
-            slug, text, store.results(slug), model=model, show=show, run_html=panel
+            slug, text, store.results(slug), model=model, show=show, run_html=panel, sent=sent
         )
         return render(slug, main, active=slug)
 
@@ -634,21 +637,15 @@ def create_app(
             raise HTTPException(400, str(exc)) from exc
         return RedirectResponse(f"/drafts/{new_slug}", status_code=303)
 
-    @app.post("/posts/{slug}/send-to-dev")
-    def send_to_dev(slug: str) -> RedirectResponse:
-        """Push the finished post to portfolio-dev as a new draft blog post,
-        so Kien can tweak images and copy there before anything goes public.
-        A direct in-cluster call (ClusterIP, not the public hostname) guarded
-        by a shared token - see NIGHTSHIFT_PORTFOLIO_DEV_URL/_TOKEN."""
-        record = post_or_404(slug)
-        text = str(record.get("post", ""))
-        if not text:
-            raise HTTPException(400, "this post has not been written yet")
+    def push_to_dev(title: str, text: str) -> str:
+        """Send a text to portfolio-dev as a new draft blog post, so it can be polished there
+        (images, captions) before anything goes public. A direct in-cluster call (ClusterIP,
+        not the public hostname) guarded by a shared token - see NIGHTSHIFT_PORTFOLIO_DEV_URL
+        and _TOKEN. Gives back the slug the portfolio chose."""
         url = os.environ.get("NIGHTSHIFT_PORTFOLIO_DEV_URL", "")
         token = os.environ.get("NIGHTSHIFT_PORTFOLIO_DEV_TOKEN", "")
         if not url or not token:
             raise HTTPException(503, "portfolio-dev integration is not configured")
-        title = str(record.get("title", slug))
         payload = json.dumps({"title": title, "markdown": text}).encode("utf-8")
         req = urllib.request.Request(
             url,
@@ -664,9 +661,29 @@ def create_app(
             raise HTTPException(502, f"portfolio-dev refused it ({exc.code}): {detail}") from exc
         except urllib.error.URLError as exc:
             raise HTTPException(502, f"could not reach portfolio-dev: {exc.reason}") from exc
-        dev_slug = body.get("post", {}).get("slug", "")
+        return str(body.get("post", {}).get("slug", ""))
+
+    @app.post("/posts/{slug}/send-to-dev")
+    def send_to_dev(slug: str) -> RedirectResponse:
+        record = post_or_404(slug)
+        text = str(record.get("post", ""))
+        if not text:
+            raise HTTPException(400, "this post has not been written yet")
+        dev_slug = push_to_dev(str(record.get("title", slug)), text)
         store.update_post(slug, sent_to_dev=time.time(), sent_to_dev_slug=dev_slug)
         return RedirectResponse(f"/posts/{slug}", status_code=303)
+
+    @app.post("/drafts/{slug}/send-to-dev")
+    def send_draft_to_dev(slug: str) -> RedirectResponse:
+        text = store.read(slug)
+        if text is None:
+            raise HTTPException(404, "no such draft")
+        if not text.strip():
+            raise HTTPException(400, "this draft is empty")
+        heading = re.search(r"^#[ \t]+(.+?)[ \t]*$", text, re.M)
+        title = heading.group(1) if heading else slug.replace("-", " ")
+        dev_slug = push_to_dev(title, text)
+        return RedirectResponse(f"/drafts/{slug}?sent={quote(dev_slug)}", 303)
 
     @app.get("/posts/{slug}/run.json")
     def post_state(slug: str) -> dict[str, object]:

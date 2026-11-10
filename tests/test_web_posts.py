@@ -772,3 +772,37 @@ def test_without_text_the_outline_takes_the_wide_column(client):
     page = client.get("/posts/go-rancher-khoi-k3s").text
     left, right = page.split(chr(34) + "helpcol" + chr(34))
     assert "build-outline" in left and "The brief" in right
+
+
+def test_a_draft_can_be_sent_to_the_portfolio_with_its_own_title(client, store, monkeypatch):
+    monkeypatch.setenv("NIGHTSHIFT_PORTFOLIO_DEV_URL", "http://portfolio/admin/api/blog/incoming")
+    monkeypatch.setenv("NIGHTSHIFT_PORTFOLIO_DEV_TOKEN", "shared-secret")
+    seen = {}
+
+    def fake(request, timeout):
+        seen["token"] = request.get_header("X-ingest-token")
+        seen["body"] = json.loads(request.data)
+        return FakeReply(b'{"post": {"slug": "bai-dau"}}')
+
+    monkeypatch.setattr("nightshift.web.urllib.request.urlopen", fake)
+    store.save("note", "# Bài đầu\n\nNội dung.\n")
+    page = client.get("/drafts/note").text
+    assert page.count("Send to Portfolio Dev") == 1
+    reply = client.post("/drafts/note/send-to-dev", follow_redirects=False)
+    assert reply.status_code == 303 and reply.headers["location"] == "/drafts/note?sent=bai-dau"
+    assert seen["token"] == "shared-secret"
+    assert seen["body"]["title"] == "Bài đầu" and "Nội dung." in seen["body"]["markdown"]
+    assert "Sent to Portfolio Dev as a draft blog post (bai-dau)" in (
+        client.get("/drafts/note?sent=bai-dau").text
+    )
+    store.save("plain-note", "no heading here\n")
+    client.post("/drafts/plain-note/send-to-dev", follow_redirects=False)
+    assert seen["body"]["title"] == "plain note"
+
+
+def test_sending_a_draft_fails_cleanly_when_missing_or_unconfigured(client, store, monkeypatch):
+    monkeypatch.delenv("NIGHTSHIFT_PORTFOLIO_DEV_URL", raising=False)
+    monkeypatch.delenv("NIGHTSHIFT_PORTFOLIO_DEV_TOKEN", raising=False)
+    store.save("note", "text\n")
+    assert client.post("/drafts/note/send-to-dev").status_code == 503
+    assert client.post("/drafts/nope/send-to-dev").status_code == 404

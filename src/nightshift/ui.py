@@ -306,6 +306,7 @@ def draft_main(
     model: str = "",
     show: str = "changed",
     run_html: str = "",
+    sent: str = "",
 ) -> str:
     show = show if show in SHOW_MODES else "changed"
     base = f"/drafts/{esc(slug)}"
@@ -315,10 +316,19 @@ def draft_main(
         '<button class="danger">Delete</button></form>'
     )
     edit = f'<a class="btn" href="{base}/edit">Edit</a>'
+    send = (
+        f'<form class="inline" method="post" action="{base}/send-to-dev">'
+        '<button class="secondary">Send to Portfolio Dev</button></form>'
+    )
     title = (
         f'<div class="titlebar"><h1>{esc(slug)}</h1>'
-        f'<div class="titlebtns">{edit}{delete}</div></div>'
+        f'<div class="titlebtns">{edit}{send}{delete}</div></div>'
     )
+    if sent:
+        title += (
+            '<p class="hint">Sent to Portfolio Dev as a draft blog post '
+            f"({esc(sent[:80])}). Open its admin page to add images and publish.</p>"
+        )
     original = (
         '<details class="card"><summary>Original draft</summary>'
         f'<pre class="plain">{esc(text)}</pre></details>'
